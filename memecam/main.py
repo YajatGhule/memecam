@@ -10,6 +10,7 @@ import copy
 import threading
 import time
 import tomllib
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import numpy as np
 from . import mocap
 from .gestures import Detection, Detectors, Trigger
 from .overlays import CinemaEffect, Media, blend, fit, panel, place_beside, warp_on_face
-from .tracking import Frame, Tracker
+from .tracking import ID_FORGET, Frame, Tracker, head_box
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
@@ -38,6 +39,14 @@ class Meme:
         self.trigger = Trigger(hold=spec.get("hold", 0.3), min_show=spec.get("min_show", 2.0))
         self.started: float | None = None
         self.anchor = None
+
+    def clone(self) -> Meme:
+        """Same meme (sharing the decoded media) with its own, fresh trigger: one per person."""
+        m = copy.copy(self)
+        t = self.trigger
+        m.trigger = Trigger(t.hold, t.min_show, t.linger, t.cooldown)
+        m.started, m.anchor = None, None
+        return m
 
     def update(self, det: Detection, now: float) -> bool:
         was = self.started is not None
@@ -58,7 +67,8 @@ def load_memes(cfg: dict, load_media: bool = True) -> dict[str, Meme]:
 
 def step(tracker: Tracker, detectors: Detectors, memes: dict[str, Meme], frame: np.ndarray, now: float,
          ts: int, force=()) -> tuple[Frame, dict[str, Detection]]:
-    """Track one (already mirrored) BGR frame, run the detectors and advance every meme's trigger."""
+    """Track one (already mirrored) BGR frame, run the detectors and advance every meme's trigger.
+    Single-person: only the primary (largest) person is looked at. The app uses step_crowd()."""
     fr = tracker.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), ts)
     dets = detectors.run(fr, now)
     for name in force:
@@ -66,6 +76,89 @@ def step(tracker: Tracker, detectors: Detectors, memes: dict[str, Meme], frame: 
     for name, meme in memes.items():
         meme.update(dets.get(name, Detection(False, 0.0)), now)
     return fr, dets
+
+
+class Person:
+    """Per-person state: their own detectors (EMAs, head-pose baseline) and meme triggers."""
+
+    def __init__(self, pid: int, thresholds: dict, templates: dict[str, Meme]):
+        self.pid = pid
+        self.detectors = Detectors(thresholds)
+        self.memes = {k: m.clone() for k, m in templates.items()}
+        self.last_seen = 0.0
+        self.head: tuple[int, int, int, int] | None = None     # last known head box
+
+
+@dataclass
+class Shown:
+    """What the display thread draws for one person: a consistent copy of their memes."""
+    pid: int
+    head: tuple[int, int, int, int] | None
+    memes: dict[str, Meme]
+
+
+class Crowd:
+    """Everyone in view: one Person (detectors + memes) per tracked person id, so each person's memes
+    fire independently. State of people unseen for `forget` seconds is dropped."""
+
+    def __init__(self, cfg: dict, load_media: bool = True, templates: dict[str, Meme] | None = None):
+        self.thresholds = cfg.get("thresholds", {})
+        self.templates = templates if templates is not None else load_memes(cfg, load_media)
+        self.forget = cfg.get("people", {}).get("forget", ID_FORGET)
+        self.people: dict[int, Person] = {}
+
+    def calibrate(self):
+        for p in self.people.values():
+            p.detectors.calibrate()
+
+    def update(self, fr: Frame, now: float, force=()) -> dict[int, dict[str, Detection]]:
+        """Run every person's detectors and triggers. Returns detections per person id."""
+        people = fr.people if fr.people else ([fr] if fr.pid else [])
+        out: dict[int, dict[str, Detection]] = {}
+        for q in people:
+            st = self.people.get(q.pid)
+            if st is None:
+                st = self.people[q.pid] = Person(q.pid, self.thresholds, self.templates)
+            st.last_seen = now
+            st.head = head_box(q) or st.head
+            out[q.pid] = self._run(st, q, now, force if q is people[0] else ())
+        if not people and self.people:
+            # Nobody in view: the last person seen keeps decaying their motion stats (as with one person).
+            st = max(self.people.values(), key=lambda p: p.last_seen)
+            out[st.pid] = self._run(st, fr, now, force)
+        for pid, st in list(self.people.items()):
+            if now - st.last_seen > self.forget:
+                del self.people[pid]
+            elif pid not in out:
+                for meme in st.memes.values():
+                    meme.update(Detection(False, 0.0), now)
+        return out
+
+    @staticmethod
+    def _run(st: Person, q: Frame, now: float, force) -> dict[str, Detection]:
+        dets = st.detectors.run(q, now)
+        for name in force:
+            dets[name] = Detection(True, 1.0, q.hands[0].bbox if q.hands else (q.face.bbox if q.face else None))
+        for name, meme in st.memes.items():
+            meme.update(dets.get(name, Detection(False, 0.0)), now)
+        return dets
+
+    def snapshot(self) -> list[Shown]:
+        return [Shown(p.pid, p.head, {k: copy.copy(m) for k, m in p.memes.items()})
+                for p in sorted(self.people.values(), key=lambda p: p.pid)]
+
+
+def step_crowd(tracker: Tracker, crowd: Crowd, frame: np.ndarray, now: float, ts: int,
+               force=()) -> tuple[Frame, dict[int, dict[str, Detection]]]:
+    """Track one (already mirrored) BGR frame and advance every person's detectors and memes."""
+    fr = tracker.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), ts)
+    return fr, crowd.update(fr, now, force)
+
+
+def tracker_from_config(cfg: dict, use_pose: bool = True, pose_async: bool = True) -> Tracker:
+    pc = cfg.get("people", {})
+    return Tracker(use_pose=use_pose, pose_async=pose_async, max_people=pc.get("max_people", 3),
+                   min_face_width=pc.get("min_face_width", 0.08))
 
 
 class VideoClock:
@@ -151,17 +244,16 @@ class Grabber:
 class LiveTracker:
     """Runs step() on a background thread, always on the newest grabbed frame, independent of the display.
 
-    Meme trigger state is only ever touched by this thread; the display thread gets a consistent copy
-    of every meme (`memes`) published together with the tracking result, so compose() never sees a meme
-    switch off halfway through drawing it."""
+    Meme trigger state (every person's) is only ever touched by this thread; the display thread gets a
+    consistent copy of every person's memes (Crowd.snapshot) published together with the tracking result,
+    so compose() never sees a meme switch off halfway through drawing it."""
 
-    def __init__(self, grabber: Grabber, tracker: Tracker, detectors: Detectors, memes: dict[str, Meme],
-                 width: int, height: int, force=()):
-        self.grabber, self.tracker, self.detectors, self.memes, self.force = grabber, tracker, detectors, memes, force
+    def __init__(self, grabber: Grabber, tracker: Tracker, crowd: Crowd, width: int, height: int, force=()):
+        self.grabber, self.tracker, self.crowd, self.force = grabber, tracker, crowd, force
         self.lock = threading.Lock()
         self.fr = Frame(width=width, height=height)
-        self.dets: dict[str, Detection] = {}
-        self.shown = {k: copy.copy(m) for k, m in memes.items()}
+        self.dets: dict[int, dict[str, Detection]] = {}
+        self.shown = crowd.snapshot()
         self.count = 0
         self.error: BaseException | None = None
         self.want_calibrate = False
@@ -181,18 +273,18 @@ class LiveTracker:
                 frame, now, seq = got
                 if self.want_calibrate:
                     self.want_calibrate = False
-                    self.detectors.calibrate()
+                    self.crowd.calibrate()
                 ts = max(int(now * 1000), last_ts + 1)
                 last_ts = ts
-                fr, dets = step(self.tracker, self.detectors, self.memes, frame, now, ts, self.force)
-                shown = {k: copy.copy(m) for k, m in self.memes.items()}
+                fr, dets = step_crowd(self.tracker, self.crowd, frame, now, ts, self.force)
+                shown = self.crowd.snapshot()     # per-person meme copies, taken on this thread
                 with self.lock:
                     self.fr, self.dets, self.shown = fr, dets, shown
                     self.count += 1
         except BaseException as e:  # noqa: BLE001 - re-raised on the display thread
             self.error = e
 
-    def latest(self) -> tuple[Frame, dict[str, Detection], dict[str, Meme], int]:
+    def latest(self) -> tuple[Frame, dict[int, dict[str, Detection]], list[Shown], int]:
         if self.error is not None:
             raise RuntimeError("tracking thread failed") from self.error
         with self.lock:
@@ -206,55 +298,92 @@ class LiveTracker:
         self.thread.join(timeout=5.0)
 
 
-def corner(shape, w, h, where):
+CORNERS = ("tl", "tr", "bl", "br")
+
+
+def corner(shape, w, h, where, k=0):
+    """Top-left of a w×h panel in a corner; the k-th panel in the same corner sits next to the previous."""
     H, W = shape[:2]
-    x = 20 if where[1] == "l" else W - w - 20
+    step = k * (w + 30)
+    x = 20 + step if where[1] == "l" else W - w - 20 - step
     y = 80 if where[0] == "t" else H - h - 40
     return x, y
 
 
-def compose(frame, fr, memes, now, cinema_fx, show_markers):
-    out = frame
-    active = [m for m in memes.values() if m.started is not None]
-    alpha = {m.name: min(1.0, (now - m.started) / 0.15) for m in active}
-    H = out.shape[0]
+def over_face(dst, img, head, alpha, grow=1.6):
+    """The meme (unwarped, aspect kept) about `grow` × the face width, centred a bit above the face's centre."""
+    x0, y0, x1, y1 = head
+    target_w = max(16, (x1 - x0) * grow)
+    ih, iw = img.shape[:2]
+    h = max(16, int(target_w * ih / iw) // 8 * 8)        # quantised so the resize cache gets hits
+    small = fit(img, h)
+    w = small.shape[1]
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2 - int(0.08 * (y1 - y0))
+    blend(dst, small, cx - w // 2, cy - h // 2, alpha)
 
-    for m in active:
-        if m.placement == "cinema":
-            cinema_fx.apply(out, alpha[m.name])
-    for m in active:
-        if m.placement == "face" and fr.face is not None:
-            warp_on_face(out, m.media.at(now - m.started), fr.face.pts, alpha[m.name])
+
+def placement_of(m: Meme, on_face: bool) -> str:
+    return "over_face" if on_face else m.placement
+
+
+def compose(frame, fr, shown: list[Shown], now, cinema_fx, show_markers, on_face: bool = False):
+    """Draw every person's active memes (and the markers) onto `frame`. `on_face` = put every meme over
+    the face of the person who triggered it ([display] meme_on_face)."""
+    out = frame
+    H, W = out.shape[:2]
+    active = [(s, m) for s in shown for m in s.memes.values() if m.started is not None]
+    alpha = {id(m): min(1.0, (now - m.started) / 0.15) for _, m in active}
+    faces = {q.pid: q.face for q in fr.people} if fr.people else {fr.pid: fr.face}
+    crowd = len(fr.people) > 1
+
+    cinema = [alpha[id(m)] for _, m in active if m.placement == "cinema"]
+    if cinema:
+        cinema_fx.apply(out, max(cinema))
+    if not on_face:
+        for s, m in active:
+            if m.placement == "face" and faces.get(s.pid) is not None:
+                warp_on_face(out, m.media.at(now - m.started), faces[s.pid].pts, alpha[id(m)])
 
     if show_markers:
         mocap.draw(out, fr)
 
-    for m in active:
-        if m.placement == "face" and fr.face is not None:
+    stacked = {c: 0 for c in CORNERS}
+    for s, m in active:
+        where = placement_of(m, on_face)
+        a = alpha[id(m)]
+        if where == "face" and faces.get(s.pid) is not None:
+            continue
+        if where == "over_face":
+            if s.head is not None:
+                over_face(out, m.media.at(now - m.started), s.head, a)
             continue
         img = fit(m.media.at(now - m.started), int(H * m.height))
         h, w = img.shape[:2]
-        if m.placement == "center":
+        if where == "center":
             # Big and frameless, horizontally centered: over the chest (just under the chin), or at
             # the top of the frame when the face sits low, whichever hides less of the face.
-            W = out.shape[1]
+            # With several people in view it centres on the person who triggered it.
             low, top = max(30, H - h - 10), 40
             y = int(H * 0.4)
-            if fr.face is not None:
-                fy0, fy1 = fr.face.bbox[1], fr.face.bbox[3]
+            x = (W - w) // 2
+            if s.head is not None:
+                fy0, fy1 = s.head[1], s.head[3]
                 cands = [min(max(fy1 - h // 8, top), low), top]
                 y = min(cands, key=lambda c: max(0, min(c + h, fy1) - max(c, fy0)))
-            blend(out, img, (W - w) // 2, min(y, low), alpha[m.name])
+                if crowd:
+                    x = int(np.clip((s.head[0] + s.head[2]) // 2 - w // 2, 0, max(0, W - w)))
+            blend(out, img, x, min(y, low), a)
             continue
-        if m.placement in ("tl", "tr", "bl", "br"):
-            x, y = corner(out.shape, w, h, m.placement)
-        elif m.placement == "cinema":
-            x, y = corner(out.shape, w, h, "tl")
+        accent = mocap.person_colors(s.pid)[3]
+        if where in CORNERS or where == "cinema":
+            c = "tl" if where == "cinema" else where
+            x, y = corner(out.shape, w, h, c, stacked[c])
+            stacked[c] += 1
         else:
-            box = m.anchor or (out.shape[1] // 2 - 1, H // 2 - 1, out.shape[1] // 2, H // 2)
+            box = m.anchor or (W // 2 - 1, H // 2 - 1, W // 2, H // 2)
             x, y = place_beside(out.shape, box, w, h)
-        panel(out, img, x, y, m.title, alpha[m.name])
-    return [m.name for m in active]
+        panel(out, img, x, y, m.title, a, accent)
+    return [m.name if len(shown) < 2 else f"{m.name}#{s.pid}" for s, m in active]
 
 
 def debug_panel(img, dets: dict[str, Detection], memes):
@@ -309,16 +438,17 @@ def main():
         H, W = frame.shape[:2]
     mirror = cam_cfg.get("mirror", True) and not args.no_mirror
 
-    # Live path: a grabber thread reads frames, a tracking thread runs step() on the newest one, and this
+    # Live path: a grabber thread reads frames, a tracking thread runs step_crowd() on the newest one, and this
     # loop shows every camera frame with the latest tracking result drawn on it.
     # --video (without --realtime) and --snapshot run synchronously: every frame is tracked, deterministic.
     live = args.bench is not None or (not args.snapshot and (not args.video or args.realtime))
     headless = args.snapshot is not None or args.bench is not None
 
     print("[memecam] loading models + memes ...")
-    tracker = Tracker(use_pose=not args.no_pose, pose_async=True)
-    detectors = Detectors(cfg.get("thresholds", {}))
-    memes = load_memes(cfg)
+    tracker = tracker_from_config(cfg, use_pose=not args.no_pose, pose_async=True)
+    crowd = Crowd(cfg)
+    memes = crowd.templates
+    on_face = bool(cfg.get("display", {}).get("meme_on_face", False))
     cinema_fx = CinemaEffect()
 
     vcam = None
@@ -339,21 +469,21 @@ def main():
     n = 0
     out_frame = None
     fr, active = None, []
-    dets: dict[str, Detection] = {}
-    shown = memes
+    dets: dict[int, dict[str, Detection]] = {}
+    shown: list[Shown] = []
     det_fps, det_count, det_last = 0.0, 0, time.perf_counter()
     draw_time = 0.0
 
     grabber = live_tracker = None
     if live:
         grabber = Grabber(cap, mirror, t0, pace=1 / clock.fps if clock else None, loop=args.bench is not None)
-        live_tracker = LiveTracker(grabber, tracker, detectors, memes, W, H, args.force)
+        live_tracker = LiveTracker(grabber, tracker, crowd, W, H, args.force)
     seq = 0
 
     def save_snapshot(img):
         cv2.imwrite(str(args.snapshot), img)
         print(f"[memecam] {n} frames, {fps:.1f} FPS, face={fr.face is not None} hands={len(fr.hands)} "
-              f"pose={fr.pose is not None} active={active} -> {args.snapshot}")
+              f"pose={fr.pose is not None} people={[q.pid for q in fr.people]} active={active} -> {args.snapshot}")
 
     if not headless:
         cv2.namedWindow("Meme Cam", cv2.WINDOW_NORMAL)
@@ -385,16 +515,17 @@ def main():
                 now = clock.next() if clock else time.monotonic() - t0
                 ts = max(int(now * 1000), last_ts + 1)
                 last_ts = ts
-                fr, dets = step(tracker, detectors, memes, frame, now, ts, args.force)
+                fr, dets = step_crowd(tracker, crowd, frame, now, ts, args.force)
+                shown = crowd.snapshot()
 
             d0 = time.perf_counter()
-            active = compose(frame, fr, shown, now, cinema_fx, show_markers)
+            active = compose(frame, fr, shown, now, cinema_fx, show_markers, on_face)
 
             t = time.perf_counter()
             fps = 0.9 * fps + 0.1 / max(t - last, 1e-3)
             last = t
             if show_debug:
-                debug_panel(frame, dets, shown)
+                debug_panel(frame, dets.get(fr.pid, {}), memes)
             mocap.hud(frame, fps, active, writer is not None, show_markers, det_fps if live else None)
             draw_time += time.perf_counter() - d0
 
@@ -431,7 +562,7 @@ def main():
                 if live_tracker is not None:
                     live_tracker.calibrate()      # detector state belongs to the tracking thread
                 else:
-                    detectors.calibrate()
+                    crowd.calibrate()
             elif key == ord("r"):
                 if writer is None:
                     out = Path.home() / "Videos" / f"memecam-{datetime.now():%Y%m%d-%H%M%S}.mp4"

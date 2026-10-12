@@ -44,9 +44,29 @@ Virtual webcam needs v4l2loopback once:
 | middle finger 🖕 | a ThinkPad flips you off back |
 | open palms up at chest height, bouncing up and down in turns like weighing scales ("six seven") | a huge **67** |
 
+By default every meme is drawn on top of the face of whoever triggered it, following the face as it moves
+(when your hands hide the face, the body pose's head position is used). Absolute cinema still turns the
+frame black & white with its caption. Set `[display] meme_on_face = false` in `memecam/config.toml` to use
+each meme's own `placement` instead (corner panel, beside your hand, warped onto the face, ...).
+
+## Several people
+
+Up to `[people] max_people` people (default 3) are tracked at once. Each person gets a persistent id
+(`PERSON_01`, `PERSON_02`, ... with their own marker colors) and their own gesture detectors and meme
+triggers, so everyone's memes fire independently and show up on (or next to) that person.
+
+- Faces narrower than `[people] min_face_width` × the frame width (default 0.08) are ignored, so the
+  classmates in the back of the room don't count; of the rest, the largest `max_people` are kept.
+- Each face takes the body pose whose nose is nearest; a pose without a face (hands over it) is still a person.
+  Each hand goes to the person whose pose wrist is nearest, else to the nearest face within ~3.5 face widths;
+  other hands are ignored. With just one person in view, every hand is theirs (same as before).
+- Ids follow the head from frame to frame; someone out of view for more than `[people] forget` seconds (2 s)
+  loses their id and meme state. With several corner panels of the same kind, they sit side by side.
+- More people cost more tracking time (face and hand models run per person); lower `max_people` if FPS drops.
+
 The detectors were tuned on real recordings. To re-check after changing thresholds:
 `uv run python tools/eval_clips.py` (reads the clips in `~/Videos/Webcam`, see the name map in the script),
-and `uv run pytest -q tests` for the synthetic-landmark tests.
+and `uv run pytest -q tests` for the synthetic-landmark tests. (The clip evaluation looks at the largest person only.)
 
 Thresholds, placement, sizes and which file each meme uses live in `memecam/config.toml`.
 Swap a meme by dropping a file into `assets/` and pointing the config at it.

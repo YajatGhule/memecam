@@ -8,13 +8,25 @@ import numpy as np
 from mediapipe.tasks.python.vision import (FaceLandmarksConnections, HandLandmarksConnections,
                                            PoseLandmarksConnections)
 
-from .tracking import Frame
+from .tracking import Frame, head_box
 
 FACE_COL = (255, 220, 60)     # BGR cyan-ish
 HAND_COL = (90, 255, 90)      # green
 POSE_COL = (40, 160, 255)     # orange
 TEXT_COL = (235, 235, 235)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+# Per person id: (face, hand, pose, meme panel accent), BGR. Person 1 keeps the original look.
+PERSON_COLORS = [
+    (FACE_COL, HAND_COL, POSE_COL, (80, 220, 255)),
+    ((255, 110, 240), (210, 140, 255), (200, 60, 255), (255, 110, 240)),     # magenta / pink
+    ((90, 240, 255), (60, 200, 255), (70, 90, 255), (90, 240, 255)),         # yellow / red
+    ((255, 170, 120), (255, 255, 140), (255, 120, 60), (255, 200, 120)),     # blue / aqua
+]
+
+
+def person_colors(pid: int) -> tuple:
+    return PERSON_COLORS[(max(pid, 1) - 1) % len(PERSON_COLORS)]
 
 FACE_EDGES = [(c.start, c.end) for c in FaceLandmarksConnections.FACE_LANDMARKS_CONTOURS]
 FACE_DOTS = sorted({i for e in FACE_EDGES for i in e})
@@ -63,32 +75,36 @@ def _segments(pts: np.ndarray, edges: np.ndarray) -> list[np.ndarray]:
 
 
 def draw(img: np.ndarray, fr: Frame) -> None:
-    """Draw markers in place. Glow comes from a blurred copy of the marker layer."""
+    """Draw every person's markers in place, one color scheme per person id.
+    Glow comes from a blurred copy of the marker layer."""
+    people = fr.people if fr.people else [fr]
     layer = np.zeros_like(img)
 
-    if fr.pose is not None:
-        vis = fr.pose[:, 3] > 0.5
-        edges = POSE_EDGE_IDX[vis[POSE_EDGE_IDX].all(axis=1)]
-        if len(edges):
-            cv2.polylines(layer, _segments(fr.pose, edges), False, POSE_COL, 2, cv2.LINE_AA)
-        ip = fr.pose[:, :2].astype(np.int32).tolist()
-        for i in POSE_DOTS:
-            if vis[i]:
-                cv2.circle(layer, ip[i], 5, POSE_COL, -1, cv2.LINE_AA)
+    for q in people:
+        face_col, hand_col, pose_col, _ = person_colors(q.pid)
+        if q.pose is not None:
+            vis = q.pose[:, 3] > 0.5
+            edges = POSE_EDGE_IDX[vis[POSE_EDGE_IDX].all(axis=1)]
+            if len(edges):
+                cv2.polylines(layer, _segments(q.pose, edges), False, pose_col, 2, cv2.LINE_AA)
+            ip = q.pose[:, :2].astype(np.int32).tolist()
+            for i in POSE_DOTS:
+                if vis[i]:
+                    cv2.circle(layer, ip[i], 5, pose_col, -1, cv2.LINE_AA)
 
-    if fr.face is not None:
-        pts = fr.face.pts
-        cv2.polylines(layer, _segments(pts, FACE_EDGE_IDX), False, FACE_COL, 1, cv2.LINE_AA)
-        ip = pts[:, :2].astype(np.int32).tolist()
-        for i in FACE_DOTS:
-            cv2.circle(layer, ip[i], 2, FACE_COL, -1, cv2.LINE_AA)
-        for i in (1, 152, 33, 263, 10):
-            cv2.circle(layer, ip[i], 4, (255, 255, 255), -1, cv2.LINE_AA)
+        if q.face is not None:
+            pts = q.face.pts
+            cv2.polylines(layer, _segments(pts, FACE_EDGE_IDX), False, face_col, 1, cv2.LINE_AA)
+            ip = pts[:, :2].astype(np.int32).tolist()
+            for i in FACE_DOTS:
+                cv2.circle(layer, ip[i], 2, face_col, -1, cv2.LINE_AA)
+            for i in (1, 152, 33, 263, 10):
+                cv2.circle(layer, ip[i], 4, (255, 255, 255), -1, cv2.LINE_AA)
 
-    for hand in fr.hands:
-        cv2.polylines(layer, _segments(hand.pts, HAND_EDGE_IDX), False, HAND_COL, 2, cv2.LINE_AA)
-        for i, pt in enumerate(hand.pts[:, :2].astype(np.int32).tolist()):
-            cv2.circle(layer, pt, 5 if i in HAND_LABELS else 3, HAND_COL, -1, cv2.LINE_AA)
+        for hand in q.hands:
+            cv2.polylines(layer, _segments(hand.pts, HAND_EDGE_IDX), False, hand_col, 2, cv2.LINE_AA)
+            for i, pt in enumerate(hand.pts[:, :2].astype(np.int32).tolist()):
+                cv2.circle(layer, pt, 5 if i in HAND_LABELS else 3, hand_col, -1, cv2.LINE_AA)
 
     # Glow: blur a quarter-size copy, double it there (img + glow + glow == img + 2*glow with saturation),
     # and upscale once, instead of two full-frame adds.
@@ -100,19 +116,24 @@ def draw(img: np.ndarray, fr: Frame) -> None:
     cv2.copyTo(layer, cv2.cvtColor(layer, cv2.COLOR_BGR2GRAY), img)
 
     # Labels and boxes are drawn crisp, without glow.
-    if fr.pose is not None:
-        for i, name in POSE_LABELS.items():
-            if fr.pose[i, 3] > 0.5:
-                _tag(img, fr.pose[i], name, POSE_COL)
-    if fr.face is not None:
-        brackets(img, fr.face.bbox, FACE_COL, "FACE_01 // TRACKED")
-        for i, name in FACE_LABELS.items():
-            _tag(img, fr.face.pts[i], name, FACE_COL)
-    for hand in fr.hands:
-        side = "L" if hand.label == "Left" else "R"
-        brackets(img, hand.bbox, HAND_COL, f"{side}_HAND {hand.gesture}", pad=10, arm=14)
-        for i, name in HAND_LABELS.items():
-            _tag(img, hand.pts[i], f"{side}_{name}", HAND_COL)
+    for q in people:
+        face_col, hand_col, pose_col, _ = person_colors(q.pid)
+        who = f"PERSON_{max(q.pid, 1):02d}"
+        if q.pose is not None:
+            for i, name in POSE_LABELS.items():
+                if q.pose[i, 3] > 0.5:
+                    _tag(img, q.pose[i], name, pose_col)
+        if q.face is not None:
+            brackets(img, q.face.bbox, face_col, f"{who} // TRACKED")
+            for i, name in FACE_LABELS.items():
+                _tag(img, q.face.pts[i], name, face_col)
+        elif (box := head_box(q)) is not None:
+            brackets(img, box, pose_col, f"{who} // POSE")
+        for hand in q.hands:
+            side = "L" if hand.label == "Left" else "R"
+            brackets(img, hand.bbox, hand_col, f"{side}_HAND {hand.gesture}", pad=10, arm=14)
+            for i, name in HAND_LABELS.items():
+                _tag(img, hand.pts[i], f"{side}_{name}", hand_col)
 
 
 def hud(img: np.ndarray, fps: float, active: list[str], recording: bool, show_markers: bool,

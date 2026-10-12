@@ -3,6 +3,7 @@
 # placement:  tl / tr / bl / br  = corner panel
 #             beside             = panel next to whatever triggered it (your hand / face)
 #             face               = warped over your face
+#             over_face          = the gif itself (not warped) on top of your face, following it
 #             center             = big transparent overlay centered over your chest (no frame)
 #             cinema             = black & white + "ABSOLUTE CINEMA" caption, plus a corner panel
 # height:     panel height as a fraction of the frame height
@@ -14,6 +15,15 @@ index = 0
 width = 1280
 height = 720
 mirror = true
+
+[people]
+max_people = 3          # track up to this many people; each one's memes fire on their own
+min_face_width = 0.08   # ignore faces narrower than this fraction of the frame width (people in the background)
+forget = 2.0            # seconds a person who left the frame keeps their id and meme state
+
+[display]
+meme_on_face = true     # every meme goes on top of the face of whoever triggered it (overrides placement;
+                        # absolute cinema still turns the frame black & white). false = use each placement
 
 [thresholds]
 finger_extended_ratio = 1.15
