@@ -13,6 +13,7 @@ cd ~/Projects/meme-cam
 uv run memecam              # window
 uv run memecam --vcam       # also publish as a virtual webcam (Discord / Meet / OBS)
 uv run memecam --no-pose    # skip body tracking if FPS is low
+uv run memecam --verbose    # show MediaPipe/OpenCV/Qt log output (hidden by default)
 ```
 
 Virtual webcam needs v4l2loopback once:
@@ -23,6 +24,7 @@ Virtual webcam needs v4l2loopback once:
 | key | action |
 |---|---|
 | `d` | toggle tracking markers + bounding boxes |
+| `f` | toggle the meme overlays (detection keeps running) |
 | `q` / `Esc` | quit |
 | `i` | gesture debug scores |
 | `r` | start/stop recording to `~/Videos/memecam-*.mp4` |

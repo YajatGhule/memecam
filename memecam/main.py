@@ -1,12 +1,14 @@
 """Meme Cam: webcam + mocap markers + gesture-triggered memes.
 
-Keys: d = toggle markers/bounding boxes, i = gesture debug scores, r = record,
+Keys: d = toggle markers/bounding boxes, f = toggle meme overlays, i = gesture debug scores, r = record,
       c = recalibrate head pose, q / Esc = quit
 """
 from __future__ import annotations
 
 import argparse
 import copy
+import os
+import sys
 import threading
 import time
 import tomllib
@@ -162,6 +164,24 @@ def step_crowd(tracker: Tracker, crowd: Crowd, frame: np.ndarray, now: float, ts
     """Track one (already mirrored) BGR frame and advance every person's detectors and memes."""
     fr = tracker.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), ts)
     return fr, crowd.update(fr, now, force)
+
+
+def quiet_native_logs() -> None:
+    """Hide the C++ log spam (MediaPipe/TFLite/absl, OpenCV, Qt) that goes straight to the stderr file
+    descriptor, while keeping Python errors and tracebacks visible (`--verbose` keeps everything)."""
+    keep = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    sys.stderr = os.fdopen(keep, "w", buffering=1)
+
+
+def window_open(name: str) -> bool:
+    """False once the user closed the window with its X button (Qt then raises instead of returning 0)."""
+    try:
+        return cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1
+    except cv2.error:
+        return False
 
 
 def tracker_from_config(cfg: dict, use_pose: bool = True, pose_async: bool = True) -> Tracker:
@@ -425,7 +445,10 @@ def main():
                          "tracking), like a webcam; loops the clip")
     ap.add_argument("--bench", type=float, metavar="SECONDS",
                     help="headless: run the live path this long, print display FPS vs tracking FPS, exit")
+    ap.add_argument("--verbose", action="store_true", help="show MediaPipe/OpenCV/Qt log output")
     args = ap.parse_args()
+    if not args.verbose:
+        quiet_native_logs()
 
     cfg = tomllib.loads(args.config.read_text())
     cam_cfg = cfg.get("camera", {})
@@ -470,7 +493,7 @@ def main():
             print(f"[memecam] no virtual camera ({e}).\n  sudo pacman -S v4l2loopback-dkms && "
                   "sudo modprobe v4l2loopback exclusive_caps=1 card_label='Meme Cam'")
 
-    show_markers, show_debug = True, False
+    show_markers, show_debug, show_memes = True, False, True
     writer = None
     fps, last = 0.0, time.perf_counter()
     t0 = time.monotonic()
@@ -495,7 +518,8 @@ def main():
               f"pose={fr.pose is not None} people={[q.pid for q in fr.people]} active={active} -> {args.snapshot}")
 
     if not headless:
-        cv2.namedWindow("Meme Cam", cv2.WINDOW_NORMAL)
+        # GUI_NORMAL: no Qt toolbar (its save/zoom buttons opened dialogs that spammed the terminal)
+        cv2.namedWindow("Meme Cam", cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
         cv2.resizeWindow("Meme Cam", W, H)
 
     try:
@@ -528,14 +552,15 @@ def main():
                 shown = crowd.snapshot()
 
             d0 = time.perf_counter()
-            active = compose(frame, fr, shown, now, cinema_fx, show_markers, on_face)
+            # [f] hides the meme overlays (detection keeps running, markers stay as toggled by [d])
+            active = compose(frame, fr, shown if show_memes else [], now, cinema_fx, show_markers, on_face)
 
             t = time.perf_counter()
             fps = 0.9 * fps + 0.1 / max(t - last, 1e-3)
             last = t
             if show_debug:
                 debug_panel(frame, dets.get(fr.pid, {}), memes)
-            mocap.hud(frame, fps, active, writer is not None, show_markers, det_fps if live else None)
+            mocap.hud(frame, fps, active, writer is not None, show_markers, det_fps if live else None, show_memes)
             draw_time += time.perf_counter() - d0
 
             if writer is not None:
@@ -561,8 +586,10 @@ def main():
 
             cv2.imshow("Meme Cam", frame)
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27) or cv2.getWindowProperty("Meme Cam", cv2.WND_PROP_VISIBLE) < 1:
+            if key in (ord("q"), 27) or not window_open("Meme Cam"):
                 break
+            elif key == ord("f"):
+                show_memes = not show_memes
             elif key == ord("d"):
                 show_markers = not show_markers
             elif key == ord("i"):
