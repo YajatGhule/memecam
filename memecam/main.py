@@ -457,7 +457,8 @@ def main():
         cap, clock = open_video(args.video)
         W, H = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     else:
-        cap = cv2.VideoCapture(args.camera if args.camera is not None else cam_cfg.get("index", 0), cv2.CAP_V4L2)
+        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_V4L2
+        cap = cv2.VideoCapture(args.camera if args.camera is not None else cam_cfg.get("index", 0), backend)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_cfg.get("width", 1280))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_cfg.get("height", 720))
