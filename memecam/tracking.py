@@ -10,6 +10,7 @@ Landmarks are converted to pixel-space numpy arrays so the rest of the app never
 """
 from __future__ import annotations
 
+import os
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -320,27 +321,83 @@ def motion_gray(rgb: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), (5, 5), 0)
 
 
+def discrete_gpu() -> str | None:
+    """'nvidia' / 'amd' if a dedicated GPU is present (Linux sysfs or Windows/macOS: nvidia-smi only)."""
+    import glob
+    import shutil
+    for vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+        try:
+            vendor = open(vendor_file).read().strip()
+        except OSError:
+            continue
+        if vendor == "0x10de":
+            return "nvidia"
+        if vendor == "0x1002":
+            return "amd"
+    return "nvidia" if shutil.which("nvidia-smi") else None
+
+
+def use_dedicated_gpu(kind: str) -> None:
+    """Route MediaPipe's OpenGL/EGL context to the dedicated GPU on hybrid-graphics laptops.
+    Must run before the first MediaPipe task is created."""
+    if kind == "nvidia":
+        os.environ.setdefault("__NV_PRIME_RENDER_OFFLOAD", "1")
+        os.environ.setdefault("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
+        egl = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        if os.path.exists(egl):
+            os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", egl)
+    elif kind == "amd":
+        os.environ.setdefault("DRI_PRIME", "1")
+
+
+def pick_delegate(mode: str) -> tuple[str, str]:
+    """mode: auto | gpu | cpu  ->  (delegate, reason). auto = GPU only when a dedicated GPU exists:
+    on integrated graphics (e.g. Intel UHD) MediaPipe's GPU path is no faster than the CPU."""
+    mode = (mode or "auto").lower()
+    if mode == "cpu":
+        return "cpu", "forced by config"
+    gpu = discrete_gpu()
+    if gpu:
+        use_dedicated_gpu(gpu)
+        return "gpu", f"dedicated {gpu} GPU"
+    if mode == "gpu":
+        return "gpu", "forced by config (integrated GPU)"
+    return "cpu", "no dedicated GPU found"
+
+
+def create_task(factory, options_cls, model: str, delegate: str, **kw):
+    """Create a MediaPipe task on the GPU, falling back to the CPU if the GPU delegate fails."""
+    if delegate == "gpu":
+        try:
+            return factory(options_cls(base_options=BaseOptions(
+                model_asset_path=model_path(model), delegate=BaseOptions.Delegate.GPU), **kw)), "gpu"
+        except Exception as e:  # noqa: BLE001 - any driver/EGL error -> run on CPU instead
+            print(f"[memecam] GPU unavailable for {model} ({e}); using CPU")
+    return factory(options_cls(base_options=BaseOptions(model_asset_path=model_path(model)), **kw)), "cpu"
+
+
 class Tracker:
     def __init__(self, use_pose: bool = True, pose_async: bool = True, max_people: int = 3,
-                 min_face_width: float = 0.08, forget: float = ID_FORGET):
+                 min_face_width: float = 0.08, forget: float = ID_FORGET, device: str = "auto"):
         self.pose_async = pose_async
         self.max_people, self.min_face_width = max(1, int(max_people)), float(min_face_width)
         self.ids = Identities(forget=forget)
         n = self.max_people
         running = vision.RunningMode.VIDEO
-        self.hands = vision.GestureRecognizer.create_from_options(vision.GestureRecognizerOptions(
-            base_options=BaseOptions(model_asset_path=model_path("gesture_recognizer.task")),
-            running_mode=running, num_hands=2 * n,
-            min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5))
-        self.face = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=model_path("face_landmarker.task")),
-            running_mode=running, num_faces=n, output_face_blendshapes=True))
-        self.pose = None
+        delegate, why = pick_delegate(device)
+        self.hands, d1 = create_task(vision.GestureRecognizer.create_from_options, vision.GestureRecognizerOptions,
+                                     "gesture_recognizer.task", delegate, running_mode=running, num_hands=2 * n,
+                                     min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5,
+                                     min_tracking_confidence=0.5)
+        self.face, d2 = create_task(vision.FaceLandmarker.create_from_options, vision.FaceLandmarkerOptions,
+                                    "face_landmarker.task", delegate, running_mode=running, num_faces=n,
+                                    output_face_blendshapes=True)
+        self.pose, d3 = None, d2
         if use_pose:
-            self.pose = vision.PoseLandmarker.create_from_options(vision.PoseLandmarkerOptions(
-                base_options=BaseOptions(model_asset_path=model_path("pose_landmarker_lite.task")),
-                running_mode=running, num_poses=n))
+            self.pose, d3 = create_task(vision.PoseLandmarker.create_from_options, vision.PoseLandmarkerOptions,
+                                        "pose_landmarker_lite.task", delegate, running_mode=running, num_poses=n)
+        self.device = "gpu" if "gpu" in (d1, d2, d3) else "cpu"
+        print(f"[memecam] tracking on {self.device.upper()} ({why})")
         self.pool = ThreadPoolExecutor(3, thread_name_prefix="tracker")
         self.pose_job: tuple[Future, int, int] | None = None
         self.last_poses: list[np.ndarray] = []

@@ -187,6 +187,7 @@ def window_open(name: str) -> bool:
 def tracker_from_config(cfg: dict, use_pose: bool = True, pose_async: bool = True) -> Tracker:
     pc = cfg.get("people", {})
     return Tracker(use_pose=use_pose, pose_async=pose_async, max_people=pc.get("max_people", 3),
+                   device=cfg.get("tracking", {}).get("device", "auto"),
                    min_face_width=pc.get("min_face_width", 0.08), forget=pc.get("forget", ID_FORGET))
 
 
