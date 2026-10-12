@@ -189,6 +189,11 @@ def test_plain_fist_is_not_thumbs_up():
     assert not run(Detectors({}), [make_hand(FIST)])["thumbs_up"].raw
 
 
+def test_fist_label_vetoes_geometric_thumbs_up():
+    """MediaPipe calling it a Closed_Fist (thumb resting on top of the fist) beats the geometry."""
+    assert not run(Detectors({}), [thumbs_up_hand(gesture="Closed_Fist")])["thumbs_up"].raw
+
+
 @pytest.mark.parametrize("angle", [0, 30, -30, 45])
 def test_index_up_is_nerd(angle):
     d = run(Detectors({}), [make_hand(INDEX, angle=angle)])
@@ -442,14 +447,16 @@ def test_dafoe_calibrate_resets():
 # ---------------------------------------------------------------------------------------
 
 
-def wave(det, ext=OPEN, frames=30, step=30.0, two=True, labels=("Left", "Right"), t0=0.0):
+def wave(det, ext=OPEN, frames=30, step=30.0, two=True, labels=("Left", "Right"), t0=0.0, angle=90.0):
+    """Hands moving sideways while talking. `angle` 90 = fingers pointing sideways (hands down by the
+    desk); 0 = hands held up with the fingers pointing up (palms out, see the palms-out tests)."""
     out = []
     for i in range(frames):
         phase = (i // 8) % 2
         dx = (i % 8) * step * (1 if phase == 0 else -1) + (0 if phase == 0 else 8 * step)
-        hands = [make_hand(ext, wrist=(350 + dx, 550), label=labels[0])]
+        hands = [make_hand(ext, angle=angle, wrist=(350 + dx, 550), label=labels[0])]
         if two:
-            hands.append(make_hand(ext, wrist=(930 - dx, 550 + dx / 3), label=labels[1]))
+            hands.append(make_hand(ext, angle=angle, wrist=(930 - dx, 550 + dx / 3), label=labels[1]))
         face = make_face(mouth=0.02 + 0.06 * (i % 2))                 # talking
         out.append(run(det, hands, face, now=t0 + i / 30, motion=min(0.3, step / 250)))
     return out
@@ -504,6 +511,70 @@ def test_talking_to_wall_decays_after_stopping():
     wave(det)
     res = wave(det, step=0.0, t0=1.0)
     assert not res[-1]["talking_to_wall"].raw
+
+
+def test_talking_to_wall_palms_out_while_talking():
+    """Explaining with both open palms held up at chest height: fires while talking, even with the
+    hands barely moving (no motion at all)."""
+    res = wave(Detectors({}), step=0.0, angle=0.0)
+    assert not res[0]["talking_to_wall"].raw
+    assert all(r["talking_to_wall"].raw for r in res[3:])
+    tr = Trigger(hold=0.5)
+    assert any(tr.update(r["talking_to_wall"].raw, i / 30) for i, r in enumerate(res))
+
+
+def test_palms_out_needs_talking():
+    det = Detectors({})
+    hands = [make_hand(OPEN, wrist=(350, 550), label="Left"), make_hand(OPEN, wrist=(930, 550))]
+    assert not any(run(det, hands, make_face(), now=i / 30)["talking_to_wall"].raw for i in range(30))
+
+
+@pytest.mark.parametrize("kw", [
+    dict(xs=(560, 720)),                 # both hands in front of the face / chest, not out to the sides
+    dict(y=300),                         # up beside the head (that's absolute cinema territory)
+    dict(angle=90),                      # fingers sideways: hands resting, not held up
+    dict(two=False),                     # just one hand
+    dict(ext=FIST),                      # fists
+])
+def test_palms_out_negatives(kw):
+    xs, y, angle, two, ext = kw.get("xs", (350, 930)), kw.get("y", 550), kw.get("angle", 0.0), \
+        kw.get("two", True), kw.get("ext", OPEN)
+    det = Detectors({})
+    res = []
+    for i in range(30):
+        hands = [make_hand(ext, angle=angle, wrist=(xs[0], y), label="Left")]
+        if two:
+            hands.append(make_hand(ext, angle=-angle, wrist=(xs[1], y)))
+        res.append(run(det, hands, make_face(mouth=0.02 + 0.06 * (i % 2)), now=i / 30))
+    assert not any(r["talking_to_wall"].raw for r in res), kw
+
+
+def test_talking_to_wall_hysteresis():
+    """Once the hands are flying, a dip in the motion doesn't end it; stopping does."""
+    det = Detectors({})
+    talk = lambda i: make_face(mouth=0.02 + 0.06 * (i % 2))
+    res = [run(det, [], talk(i), now=i / 30, motion=0.12) for i in range(20)]
+    assert res[-1]["talking_to_wall"].raw
+    res = [run(det, [], talk(i), now=(20 + i) / 30, motion=0.05) for i in range(20)]
+    assert all(r["talking_to_wall"].raw for r in res)          # 0.05 < motion threshold 0.07
+    res = [run(det, [], talk(i), now=(40 + i) / 30, motion=0.0) for i in range(20)]
+    assert not res[-1]["talking_to_wall"].raw
+    # ...but that motion level alone never starts it
+    det = Detectors({})
+    assert not any(run(det, [], talk(i), now=i / 30, motion=0.05)["talking_to_wall"].raw for i in range(40))
+
+
+def test_talking_to_wall_ignores_motion_beside_someone_else():
+    """Only the motion around this person counts (someone next to them waving doesn't)."""
+    face = make_face(center=(250.0, 300.0), w=150.0, h=195.0)
+    m = np.zeros((MOTION_H, MOTION_W), bool)
+    m[:, int(900 * MOTION_W / 1280):] = True                    # everything right of x = 900 moving
+    det = Detectors({})
+    for i in range(30):
+        f = make_face(center=(250.0, 300.0), w=150.0, h=195.0, mouth=0.02 + 0.06 * (i % 2))
+        d = det.run(Frame(face=f, motion=m, width=1280, height=720), i / 30)
+        assert not d["talking_to_wall"].raw
+    assert det.motion_level(Frame(face=face, motion=m, width=1280, height=720)) == 0.0
 
 
 # ---------------------------------------------------------------------------------------
@@ -693,4 +764,80 @@ def test_sixty_seven_stops_after_bouncing():
     det = Detectors({})
     bounce(det)
     res = bounce(det, amp=0.0, t0=1.5, secs=1.5)
+    assert not res[-1]["sixty_seven"].raw
+
+
+# 67 from the motion alone: fast bouncing hands blur out of the hand tracker (and off the bottom of a
+# close-up), and the pose wrists flicker, but the moving pixels left and right of the face follow them.
+
+def motion_blobs(centers, size=120.0) -> np.ndarray:
+    """Motion mask with a square of changed pixels (image px, `size` wide) at each (x, y) centre."""
+    m = np.zeros((MOTION_H, MOTION_W), bool)
+    sx, sy = MOTION_W / 1280, MOTION_H / 720
+    for x, y in centers:
+        m[max(0, int((y - size / 2) * sy)):int((y + size / 2) * sy),
+          max(0, int((x - size / 2) * sx)):int((x + size / 2) * sx)] = True
+    return m
+
+
+def swing(det, mode="alternate", freq=2.0, amp=100.0, secs=1.5, fps=30, t0=0.0, hands=(), talk=False,
+          xs=(390.0, 890.0), y=560.0):
+    out = []
+    for i in range(int(secs * fps)):
+        t = t0 + i / fps
+        s = amp * math.sin(2 * math.pi * freq * t)
+        blobs = {"alternate": [(xs[0], y + s), (xs[1], y - s)], "together": [(xs[0], y + s), (xs[1], y + s)],
+                 "one_side": [(xs[0], y + s)], "still": [(xs[0], y), (xs[1], y)]}[mode]
+        face = make_face(mouth=0.02 + 0.06 * (i % 2)) if talk else make_face()
+        hs = hands(i) if callable(hands) else list(hands)
+        out.append(det.run(Frame(hands=hs, face=face, motion=motion_blobs(blobs), width=1280, height=720), t))
+    return out
+
+
+@pytest.mark.parametrize("freq", [1.5, 2.0, 3.0])
+def test_sixty_seven_from_motion(freq):
+    res = swing(Detectors({}), freq=freq)
+    assert fired(res)
+    assert not res[0]["sixty_seven"].raw
+
+
+@pytest.mark.parametrize("kw", [
+    dict(mode="together"),              # both hands going up and down together
+    dict(mode="one_side"),              # one hand waving
+    dict(mode="still"),                 # moving pixels that don't go up / down (e.g. hands shaking)
+    dict(amp=15.0),                     # tiny opposite jitter
+    dict(freq=0.4),                     # slow see-saw
+    dict(xs=(150.0, 1130.0)),           # far out to the sides (someone else next to you)
+])
+def test_sixty_seven_from_motion_negatives(kw):
+    assert not fired(swing(Detectors({}), **kw)), kw
+
+
+def test_sixty_seven_from_motion_blocked_by_fists():
+    fists = [make_hand(FIST, wrist=(390, 560), label="Left"), make_hand(FIST, wrist=(890, 560))]
+    assert not fired(swing(Detectors({}), hands=fists))
+
+
+def test_sixty_seven_from_motion_tolerates_misread_frames():
+    """A blurred hand misread as a fist or a pointing finger for a frame now and then doesn't stop it."""
+    def hands(i):
+        if i % 6 == 0:
+            return [make_hand(FIST, wrist=(390, 560), label="Left")]
+        if i % 6 == 3:
+            return [make_hand(INDEX, wrist=(890, 560))]
+        return [make_hand(OPEN, wrist=(390, 560), label="Left")]
+    assert fired(swing(Detectors({}), hands=hands))
+
+
+def test_sixty_seven_from_motion_suppresses_talking():
+    res = swing(Detectors({}), talk=True, secs=2.0)
+    assert fired(res)
+    on = next(i for i, r in enumerate(res) if r["sixty_seven"].raw)
+    assert not any(r["talking_to_wall"].raw for r in res[on:])
+
+
+def test_sixty_seven_from_motion_stops():
+    det = Detectors({})
+    swing(det)
+    res = swing(det, mode="still", t0=1.5, secs=1.5)
     assert not res[-1]["sixty_seven"].raw

@@ -8,7 +8,10 @@ Thresholds were tuned on real clips (tools/eval_clips.py). Lessons from those cl
 - hands over the face make the face tracker drop out and the hand tracker miss hands, so the
   body pose model (which keeps tracking wrists and fingers) backs both up;
 - fast-moving hands blur and vanish from the hand tracker, so "talking to a wall" also looks at
-  plain frame differencing around the face.
+  plain frame differencing around the face, and so does the 67 (where the moving pixels are, left
+  and right of the face) — on close-ups the bouncing hands also leave the frame at the bottom, and
+  the pose wrists flicker between up and down;
+- people talking to a wall often just hold both open palms out while talking, barely moving.
 """
 from __future__ import annotations
 
@@ -39,6 +42,21 @@ DEFAULTS = {
 BOUNCE_TAU = 0.4        # 67: smoothing time constant of the wrist-velocity statistics, seconds
 BOUNCE_WINDOW = 1.2     # 67: the hands must have swapped direction (up/down) twice within this
 BOUNCE_CORR = 0.5       # 67: how anti-correlated the two wrists' vertical motion must be (-1..1)
+SIGN_TAU = 0.25         # 67: smoothing of "a fist / finger sign / hand over the face is showing", seconds
+# 67 from frame differencing: where the motion is, left and right of the face. Fast bouncing hands
+# blur out of the hand tracker and the pose wrists flicker, but the moving pixels follow them.
+SWING_WINDOW = 1.0      # seconds of history the statistics look at
+SWING_REACH = 2.0       # side regions span 0.45..this many face-widths left / right of the face
+SWING_TOP = 0.3         # ...from this many face-widths above the nose/mouth point down to the bottom of the frame
+SWING_MIN_MOTION = 0.02 # a side counts as moving when this fraction of its region changed
+SWING_CORR = 0.5        # the two sides' motion heights must be this anti-correlated (-1..1)
+SWING_AMP = 0.4         # ...and their height difference swing this much (std, face-widths)
+
+MOTION_REACH = 3.0      # talking to a wall: motion counts within this many face-widths left / right of the head
+FLYING_KEEP = 0.6       # talking to a wall: once flying, the hands stay "flying" down to this × the thresholds
+PRESENT_SIDE = 0.7      # talking to a wall, palms out: each wrist at least this many face-widths left / right of the face
+PRESENT_LOW = (0.5, 3.0)  # ...and between these many face-widths below the nose/mouth point (chest height)
+PRESENT_GAP = 0.25      # ...seen within this many seconds (rides out hand-tracker dropouts)
 
 # Pose landmark ids
 P_NOSE, P_MOUTH, P_EARS, P_SHOULDERS, P_WRISTS, P_INDEX = 0, (9, 10), (7, 8), (11, 12), (15, 16), (19, 20)
@@ -96,6 +114,12 @@ class Detectors:
         self.bounce_energy = 0.0       # EMA of (vy_left² + vy_right²) / 2
         self.bounce_sign = 0           # sign of the last clear relative vertical velocity
         self.bounce_flips: list[float] = []
+        self.swing: list[tuple[float, float, float]] = []   # 67: (t, left, right motion height / face width)
+        self.swing_stats = (0.0, 0.0, 0)                     # corr, amp, crossings (for the debug overlay)
+        self.signing_frac = 0.0        # 67: smoothed fraction of recent frames with a fist / finger sign / covered face
+        self.signing_t: float | None = None
+        self.flying = False            # talking to a wall: hands-flying state (with hysteresis)
+        self.present_at = -1e9         # talking to a wall: last time both palms were held out
 
     def calibrate(self):
         self.nose_baseline = None
@@ -161,12 +185,20 @@ class Detectors:
     # ---- motion -----------------------------------------------------------------------
 
     def motion_level(self, fr: Frame) -> float:
-        """Fraction of the frame (outside the face) that changed since the previous frame."""
+        """Fraction of the frame that changed since the previous frame, counting only the pixels
+        around this person (within MOTION_REACH face-widths left / right of their head, so someone
+        else waving next to them doesn't count) and outside their face."""
         if fr.motion is None or not fr.width:
             return 0.0
         m = fr.motion
+        sx, sy = MOTION_W / fr.width, MOTION_H / fr.height
+        ref = head_ref(fr)
+        if ref is not None:
+            (x, _), fw = ref
+            keep = np.zeros_like(m)
+            keep[:, max(0, int((x - MOTION_REACH * fw) * sx)):max(0, int((x + MOTION_REACH * fw) * sx) + 1)] = True
+            m = m & keep
         if fr.face is not None:
-            sx, sy = MOTION_W / fr.width, MOTION_H / fr.height
             x0, y0, x1, y1 = fr.face.bbox
             m = m.copy()
             m[max(0, int(y0 * sy) - 2):int(y1 * sy) + 3, max(0, int(x0 * sx) - 2):int(x1 * sx) + 3] = False
@@ -268,6 +300,62 @@ class Detectors:
         self.bounce_flips = [t for t in self.bounce_flips if now - t <= BOUNCE_WINDOW]
         self.bounce_prev = (src, pid, now, lw, rw)
 
+    def motion_heights(self, fr: Frame, ref: tuple[np.ndarray, float] | None) -> tuple[float, float] | None:
+        """Mean height (face-widths) of the changed pixels left and right of the face, from the nose
+        down. None unless both sides are moving."""
+        if fr.motion is None or ref is None or not fr.width:
+            return None
+        (cx, cy), fw = ref
+        sx, sy = MOTION_W / fr.width, MOTION_H / fr.height
+        y0 = max(0, int((cy - SWING_TOP * fw) * sy))
+        out = []
+        for lo, hi in ((cx - SWING_REACH * fw, cx - 0.45 * fw), (cx + 0.45 * fw, cx + SWING_REACH * fw)):
+            region = fr.motion[y0:, max(0, int(lo * sx)):max(0, min(MOTION_W, int(hi * sx)))]
+            if region.size == 0 or region.mean() < SWING_MIN_MOTION:
+                return None
+            out.append((np.nonzero(region)[0].mean() + y0) / sy / fw)
+        return out[0], out[1]
+
+    def update_swing(self, fr: Frame, ref, now: float) -> bool:
+        """67 from motion: over the last SWING_WINDOW seconds, the left and right moving regions go up
+        and down in opposite directions (anti-correlated heights), with a big enough swing, crossing
+        over (one side higher, then the other) at least twice."""
+        hs = self.motion_heights(fr, ref)
+        if hs is not None:
+            self.swing.append((now, *hs))
+        self.swing = [x for x in self.swing if now - x[0] <= SWING_WINDOW]
+        if len(self.swing) < 8 or now - self.swing[0][0] < 0.6 * SWING_WINDOW:
+            self.swing_stats = (0.0, 0.0, 0)
+            return False
+        a = np.array(self.swing)[:, 1:]
+        a = a - a.mean(axis=0)
+        anti = -float((a[:, 0] * a[:, 1]).mean())
+        corr = anti / (float((a * a).mean()) + 1e-9)
+        diff = a[:, 0] - a[:, 1]
+        amp = float(diff.std())
+        crossings, side = 0, 0
+        for v in diff:                         # with hysteresis, so jitter around zero doesn't count
+            sg = 1 if v > 0.5 * amp else -1 if v < -0.5 * amp else 0
+            if sg and side and sg != side:
+                crossings += 1
+            side = sg or side
+        self.swing_stats = (corr, amp, crossings)
+        return corr > SWING_CORR and amp > SWING_AMP and crossings >= 2
+
+    def presenting(self, fr: Frame, open_hands: list[Hand], ref) -> bool:
+        """Both open hands held up at chest height, one on each side of the face (fingers pointing
+        up-ish, not hands resting on a desk), not flying around (that's the other talking-to-a-wall
+        cue): the "explaining with your palms" pose."""
+        if len(open_hands) < 2 or ref is None:
+            return False
+        (x, y), fw = ref
+        left = min(open_hands, key=lambda h: h.pts[0, 0])
+        right = max(open_hands, key=lambda h: h.pts[0, 0])
+        return (left.pts[0, 0] < x - PRESENT_SIDE * fw and right.pts[0, 0] > x + PRESENT_SIDE * fw
+                and all(PRESENT_LOW[0] * fw < h.pts[0, 1] - y < PRESENT_LOW[1] * fw    # chest height
+                        and h.pts[0, 1] - h.pts[9, 1] > 0.5 * h.size                 # held up, not resting
+                        and self.speed_of(h, fr.hands) < self.cfg["hand_speed"] for h in (left, right)))
+
     # ---- main -------------------------------------------------------------------------
 
     def run(self, fr: Frame, now: float) -> dict[str, Detection]:
@@ -310,11 +398,13 @@ class Detectors:
         vsign = find(lambda h, s: h is not gojo and tip_gap(h) > c["peace_gap"] and (
             two_up(s) or h.gesture == "Victory"))
 
-        # Thumbs up 👍 (the dad meme): fingers curled, thumb sticking up.
+        # Thumbs up 👍 (the dad meme): fingers curled, thumb sticking up. MediaPipe's Thumb_Up label is
+        # reliable on real thumbs-ups; the geometric fallback (for when it says nothing) is skipped
+        # when it calls the hand a fist (a fist with the thumb resting on top looks the same).
         def thumb_up(h, s):
             if h.gesture == "Thumb_Up":
                 return True
-            if any(s.values()):
+            if any(s.values()) or h.gesture == "Closed_Fist":
                 return False
             t = h.pts[4, :2] - h.pts[2, :2]                    # thumb MCP -> tip
             return -t[1] > 0.7 * np.linalg.norm(t) and np.linalg.norm(t) > 0.45 * h.size
@@ -418,27 +508,52 @@ class Detectors:
         self.update_bounce(wrists, now, fw)
         amp = float(np.sqrt(max(self.bounce_anti, 0.0)))
         corr = self.bounce_anti / (self.bounce_energy + 1e-6)
-        sixty_seven, box = False, None
+        swinging = self.update_swing(fr, ref, now)
+        # Open hands, not fists or finger signs (if the hands are tracked at all), and not over the
+        # face. Fast-moving hands blur, single frames get misread as a fist or a pointing finger, and
+        # a hand bouncing up to chin height briefly passes the mouth, so only something that shows up
+        # in most recent frames blocks the 67.
+        dt = now - self.signing_t if self.signing_t is not None and now > self.signing_t else 0.0
+        self.signing_t = now
+        self.signing_frac += (1 - np.exp(-dt / SIGN_TAU)) * (float(bool(fists or signing or covering)) - self.signing_frac)
+        hands_ok = self.signing_frac < 0.5
+        bouncing, box = False, None
         if wrists is not None:
             _, _, lw, rw = wrists
             low = ref is None or min(lw[1], rw[1]) > ref[0][1] + 0.5 * fw       # below the chin
             apart = rw[0] - lw[0] > 0.8 * fw                                    # not clapping
-            hands_ok = not fists and not signing                                # open hands (if tracked)
-            sixty_seven = (low and apart and hands_ok and corr > BOUNCE_CORR and amp > c["bounce_speed"]
-                           and len(self.bounce_flips) >= 2 and covering == 0 and not cinema and not mahoraga)
+            bouncing = (low and apart and corr > BOUNCE_CORR and amp > c["bounce_speed"]
+                        and len(self.bounce_flips) >= 2)
             r = int(0.3 * fw)
             box = (int(lw[0]) - r, int(min(lw[1], rw[1])) - r, int(rw[0]) + r, int(max(lw[1], rw[1])) + r)
-        d["sixty_seven"] = Detection(sixty_seven, max(corr, 0.0) * min(amp / c["bounce_speed"], 2.0) / 2, box)
+        elif ref is not None:
+            (x, y), r = ref[0], ref[1]
+            box = (int(x - 2 * r), int(y), int(x + 2 * r), int(y + 2 * r))
+        sixty_seven = ((bouncing or swinging) and hands_ok and not cinema and not mahoraga)
+        score = max(max(corr, 0.0) * min(amp / c["bounce_speed"], 2.0) / 2,
+                    max(self.swing_stats[0], 0.0) * min(self.swing_stats[1] / SWING_AMP, 2.0) / 2)
+        d["sixty_seven"] = Detection(sixty_seven, score, box)
 
-        # ---- talking to a wall: hands flying around ----
+        # ---- talking to a wall: hands flying around, or both open palms held out, while talking ----
         posed = covering > 0 or any(d[k].raw for k in ("middle_finger", "thumbs_up", "nerd", "gojo",
                                                         "absolute_cinema", "mahoraga",
                                                         "sixty_seven"))
+        # With hysteresis: once the hands are flying, a dip in the motion (hands slowing down at the
+        # end of a swing) doesn't end it straight away.
+        floor = FLYING_KEEP if self.flying else 1.0
+        self.flying = (self.motion > floor * c["motion"]
+                       or (self.hand_speed > floor * c["hand_speed"] and self.motion > 0.03))
+        hands_flying = self.flying
+        # Explaining with both hands: open palms held out on either side of you at chest height. People
+        # talking like that often barely move their hands, so this doesn't need motion.
+        if self.presenting(fr, open_hands, ref):
+            self.present_at = now
+        presenting = now - self.present_at < PRESENT_GAP
         # ...while actually talking: the mouth has to be moving too.
-        hands_flying = self.motion > c["motion"] or (self.hand_speed > c["hand_speed"] and self.motion > 0.03)
-        talking = hands_flying and now - self.mouth_at < c["mouth_window"]
+        talking = (hands_flying or presenting) and now - self.mouth_at < c["mouth_window"]
         d["talking_to_wall"] = Detection(talking and not posed,
-                                         max(self.motion / c["motion"], self.hand_speed / c["hand_speed"]) * 0.5,
+                                         max(self.motion / c["motion"], self.hand_speed / c["hand_speed"],
+                                             2.0 * (presenting and talking)) * 0.5,
                                          fbox)
         return d
 
