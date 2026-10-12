@@ -77,7 +77,6 @@ asset = "scuba_cat.gif"
 title = "SCUBA CAT"
 placement = "beside"
 height = 0.6
-key_black = true
 
 [memes.absolute_cinema]   # both open palms up beside your head
 asset = "absolute_cinema.gif"
