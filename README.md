@@ -36,11 +36,11 @@ Virtual webcam needs v4l2loopback once:
 | tilt your head back, look up | Willem Dafoe looking up |
 | cross your index and middle finger (Gojo's Infinite Void sign) | Gojo "Nah, I'd win" |
 | index finger pointing up beside your face ☝ | nerd "umm, actually..." |
-| wave your hands around while talking | man talking to a wall, warped over your face |
+| talk while gesturing: hands flying around, or both open palms held up at chest height | man talking to a wall |
 | one hand over your mouth/nose (holding your breath), other hand swimming | scuba cat |
 | both open palms up beside your head | ABSOLUTE CINEMA (frame goes black & white) |
 | two fists knuckle to knuckle in front of your chest | Megumi summoning Mahoraga |
-| peace sign ✌ (fingers spread) | piece of cake |
+| thumbs up 👍 | thumbs up dad |
 | middle finger 🖕 | a ThinkPad flips you off back |
 | open palms up at chest height, bouncing up and down in turns like weighing scales ("six seven") | a huge **67** |
 

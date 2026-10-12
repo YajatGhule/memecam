@@ -95,8 +95,9 @@ EAR_TO_FACE = 1.35          # pose ear-to-ear distance × this ≈ face-mesh wid
 POSE_FACE_MATCH = 1.5       # a pose's nose within this many face-widths of a face's nose = same person
 HAND_WRIST_MATCH = 1.2      # hand wrist within this many face-widths of a pose wrist = that person's hand
 HAND_FACE_MATCH = 3.5       # ...else within this many face-widths of a face = that person's hand
+GHOST_DIST = 2.0           # a face-less pose this close (face-widths) to another person's head is a duplicate
 ID_MAX_JUMP = 1.5           # identity: a head moves at most this many face-widths between frames
-ID_FORGET = 0.4             # seconds an unseen person keeps their id (bridges tracking dropouts only)
+ID_FORGET = 1.0             # seconds an unseen person keeps their id (bridges tracking dropouts only)
 
 
 def pose_face_width(pose: np.ndarray) -> float:
@@ -155,7 +156,13 @@ def group_people(faces: list[Face], poses: list[np.ndarray], hands: list[Hand], 
             used_f.add(i)
             used_p.add(j)
             people[i].pose = poses[j]
-    people += [Frame(pose=p) for j, p in enumerate(poses) if j not in used_p]
+    # Leftover poses are people whose face is hidden, unless they sit on someone already found: the pose
+    # model sometimes returns a second, shifted skeleton for the same body (a ghost PERSON_02).
+    for j in sorted((j for j in range(len(poses)) if j not in used_p), key=lambda j: -pose_face_width(poses[j])):
+        p, fw = poses[j], pose_face_width(poses[j])
+        if all(float(np.linalg.norm(p[0, :2] - hd[0])) > GHOST_DIST * max(fw, hd[1])
+               for hd in (head_of(q) for q in people) if hd is not None):
+            people.append(Frame(pose=p))
     people.sort(key=lambda q: -head_of(q)[1])
     people = people[:max_people]
 

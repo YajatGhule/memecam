@@ -208,7 +208,7 @@ def test_absent_person_is_not_shown_or_run_and_dropped_after_grace():
     cfg = tomllib.loads(CONFIG.read_text())
     crowd = Crowd(cfg, load_media=False)
     forget = crowd.forget
-    assert forget <= 0.5
+    assert forget <= 1.0
     a = Frame(face=face_at(LEFT), pid=1, width=W, height=H)
     b = Frame(face=face_at(RIGHT), pid=2, width=W, height=H)
     for k in range(16):
