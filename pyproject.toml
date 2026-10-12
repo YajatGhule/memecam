@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 memecam = "memecam.main:main"
+memecamv2 = "memecam.main:main_v2"
 
 [build-system]
 requires = ["hatchling"]

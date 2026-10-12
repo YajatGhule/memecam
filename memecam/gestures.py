@@ -413,6 +413,39 @@ class Detectors:
         vsign = find(lambda h, s: h is not gojo and tip_gap(h) > c["peace_gap"] and (
             two_up(s) or h.gesture == "Victory"))
 
+        # ---- v2 gestures (only with [thresholds] extra_gestures = true, i.e. `memecamv2`) ----
+        extra = bool(c.get("extra_gestures", False))
+
+        # Italian pinched fingers 🤌 (the Godfather): all five fingertips bunched together, pointing up,
+        # held out away from the palm (a fist has its tips curled back onto the palm).
+        def pinched(h):
+            tips = h.pts[[4, 8, 12, 16, 20], :2]
+            spread = np.linalg.norm(tips - tips.mean(axis=0), axis=1).max() / h.size
+            up = h.pts[0, 1] - tips[:, 1].mean() > c.get("pinch_up", 0.8) * h.size
+            reach = np.linalg.norm(h.pts[[8, 12], :2] - h.pts[0, :2], axis=1).min() > 1.15 * h.size
+            return spread < c.get("pinch_spread", 0.3) and up and reach
+        pinch = find(lambda h, s: extra and h is not gojo and pinched(h))
+        d["godfather"] = Detection(pinch is not None, 1.0 if pinch else 0.0, pinch.bbox if pinch else None)
+
+        # Looksmaxxing: index finger traced along the jawline, below the mouth (fingertip on the jaw
+        # contour), with the palm off the mouth — resting your chin on a fist has the index curled.
+        JAW = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
+
+        def on_jaw(h, s):
+            if face is None or not s["index"]:
+                return False
+            fw, jaw = face.width, face.pts[JAW, :2]
+            tip_d = np.linalg.norm(jaw - h.pts[8, :2], axis=1).min() / fw
+            seg_d = np.linalg.norm(jaw - h.pts[7, :2], axis=1).min() / fw
+            below_mouth = h.pts[8, 1] > face.pts[13, 1]
+            palm = h.pts[[0, 5, 9, 13, 17], :2].mean(axis=0)
+            mouth = (face.pts[13, :2] + face.pts[1, :2]) / 2
+            return (min(tip_d, seg_d) < c.get("jaw_dist", 0.12) and below_mouth
+                    and np.linalg.norm(palm - mouth) / fw > 0.45)
+        # One hand on its own: hands clasped under the chin (resting your head) put fingers on the jaw too.
+        jaw_hand = find(lambda h, s: extra and h is not pinch and h is not gojo and alone(h) and on_jaw(h, s))
+        d["looksmaxxing"] = Detection(jaw_hand is not None, 1.0 if jaw_hand else 0.0, fbox)
+
         # Thumbs up 👍 (the dad meme): fingers curled, thumb sticking up. MediaPipe's Thumb_Up label is
         # reliable on real thumbs-ups; the geometric fallback (for when it says nothing) is skipped
         # when it calls the hand a fist (a fist with the thumb resting on top looks the same).
@@ -423,7 +456,7 @@ class Detectors:
                 return False
             t = h.pts[4, :2] - h.pts[2, :2]                    # thumb MCP -> tip
             return -t[1] > 0.7 * np.linalg.norm(t) and np.linalg.norm(t) > 0.45 * h.size
-        thumbs = find(thumb_up)
+        thumbs = find(lambda h, s: h is not pinch and h is not jaw_hand and thumb_up(h, s))
         d["thumbs_up"] = Detection(thumbs is not None, 1.0 if thumbs else 0.0, thumbs.bbox if thumbs else None)
 
         # Nerd ☝️🤓: index finger pointing up beside the face ("umm, actually...").
@@ -437,14 +470,16 @@ class Detectors:
             x0, y0, x1, y1 = fbox
             return x0 < h.pts[8, 0] < x1 and y0 < h.pts[8, 1] < y1
 
-        point = find(lambda h, s: h is not vsign and h is not gojo and h is not thumbs and pointing_up(h) and not on_face(h)
+        point = find(lambda h, s: h is not vsign and h is not gojo and h is not thumbs and h is not pinch
+                     and h is not jaw_hand and pointing_up(h) and not on_face(h)
                      and (h.gesture == "Pointing_Up" or (s["index"] and not s["middle"] and not s["ring"]
                                                          and not s["pinky"])))
         d["nerd"] = Detection(point is not None and mid is None, 1.0 if point else 0.0,
                               point.bbox if point else None)
 
-        signing = [h for h in (mid, gojo, vsign, point, thumbs) if h is not None]
-        fists = [h for h, n in zip(hands, n_ext) if (n == 0 or h.gesture == "Closed_Fist") and h is not thumbs]
+        signing = [h for h in (mid, gojo, vsign, point, thumbs, pinch, jaw_hand) if h is not None]
+        fists = [h for h, n in zip(hands, n_ext)
+                 if (n == 0 or h.gesture == "Closed_Fist") and all(h is not x for x in (thumbs, pinch, jaw_hand))]
         can_cover = [h for h, n in zip(hands, n_ext) if n >= 3 and all(h is not x for x in signing + fists)]
         busy = [h for h in hands if all(h is not x for x in can_cover)]
 
@@ -552,7 +587,7 @@ class Detectors:
         # ---- talking to a wall: hands flying around, or both open palms held out, while talking ----
         posed = covering > 0 or any(d[k].raw for k in ("middle_finger", "thumbs_up", "nerd", "gojo",
                                                         "absolute_cinema", "mahoraga",
-                                                        "sixty_seven"))
+                                                        "sixty_seven", "godfather", "looksmaxxing"))
         # With hysteresis: once the hands are flying, a dip in the motion (hands slowing down at the
         # end of a swing) doesn't end it straight away.
         floor = FLYING_KEEP if self.flying else 1.0

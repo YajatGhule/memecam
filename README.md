@@ -14,6 +14,7 @@ uv run memecam              # window
 uv run memecam --vcam       # also publish as a virtual webcam (Discord / Meet / OBS)
 uv run memecam --no-pose    # skip body tracking if FPS is low
 uv run memecam --verbose    # show MediaPipe/OpenCV/Qt log output (hidden by default)
+uv run memecamv2            # v2: everything above plus the 🤌 Godfather and jawline looksmaxxing memes
 ```
 
 Tracking runs on a dedicated NVIDIA/AMD GPU automatically when the machine has one (hybrid laptops are
@@ -50,6 +51,13 @@ Virtual webcam needs v4l2loopback once:
 | middle finger 🖕 | a ThinkPad flips you off back |
 | open palms up at chest height, bouncing up and down in turns like weighing scales ("six seven") | a huge **67** |
 
+**v2 only** (`uv run memecamv2`, settings in `memecam/config_v2.toml` layered over `config.toml`):
+
+| do this | get this |
+|---|---|
+| Italian pinched fingers 🤌 (all fingertips bunched, pointing up) | The Godfather stroking his cat |
+| trace your jawline with your index finger (one hand) | looksmaxxing cat with a chiseled jaw |
+
 By default every meme is drawn on top of the face of whoever triggered it, following the face as it moves
 (when your hands hide the face, the body pose's head position is used). Absolute cinema still turns the
 frame black & white with its caption. Set `[display] meme_on_face = false` in `memecam/config.toml` to use
@@ -68,7 +76,7 @@ triggers, so everyone's memes fire independently and show up on (or next to) tha
   other hands are ignored. With just one person in view, every hand is theirs (same as before).
 - A person's markers, box and memes are drawn only while they are detected in the current frame; the moment
   they leave, everything of theirs disappears. Their state is kept (frozen, nothing runs for them) for just
-  `[people] forget` seconds (0.4 s) so a brief tracking dropout keeps the same id, then it is dropped.
+  `[people] forget` seconds (1 s) so a brief tracking dropout keeps the same id, then it is dropped.
 - Ids follow the head from frame to frame. One person in view is `PERSON_01`; a `PERSON_02` appears only when a
   second person is in view. Newcomers take the lowest free id, and when only one person is left they become
   `PERSON_01` again. With several corner panels of the same kind, they sit side by side.

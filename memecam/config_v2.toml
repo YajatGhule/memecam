@@ -1,0 +1,21 @@
+# v2 (`uv run memecamv2`): layered on top of config.toml — only what differs from v1 goes here.
+
+[thresholds]
+extra_gestures = true   # enable the v2 gestures below
+pinch_spread = 0.3      # godfather 🤌: fingertips within this many hand-sizes of their centre
+pinch_up = 0.8          # godfather: fingertips at least this far above the wrist (hand-sizes)
+jaw_dist = 0.12         # looksmaxxing: index finger this close to the jawline (face-widths)
+
+[memes.godfather]         # Italian pinched fingers 🤌
+asset = "godfather_cat.gif"
+title = "THE GODFATHER"
+placement = "beside"
+height = 0.4
+hold = 0.35
+
+[memes.looksmaxxing]      # trace your jawline with your index finger
+asset = "looksmaxxing_cat.gif"
+title = "LOOKSMAXXING"
+placement = "beside"
+height = 0.4
+hold = 0.35

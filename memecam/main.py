@@ -430,7 +430,22 @@ def debug_panel(img, dets: dict[str, Detection], memes):
         y += 20
 
 
-def main():
+def merge(base: dict, extra: dict) -> dict:
+    out = dict(base)
+    for k, v in extra.items():
+        out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+CONFIG_V2 = Path(__file__).resolve().parent / "config_v2.toml"
+
+
+def main_v2():
+    """`memecamv2`: the same app plus the v2 memes (config.toml with config_v2.toml layered on top)."""
+    main(overlay=CONFIG_V2, title="Meme Cam v2")
+
+
+def main(overlay: Path | None = None, title: str = "Meme Cam"):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--camera", type=int, help="camera index (default from config.toml)")
     ap.add_argument("--vcam", action="store_true", help="also publish output as a v4l2loopback virtual webcam")
@@ -452,6 +467,8 @@ def main():
         quiet_native_logs()
 
     cfg = tomllib.loads(args.config.read_text())
+    if overlay is not None:
+        cfg = merge(cfg, tomllib.loads(overlay.read_text()))
     cam_cfg = cfg.get("camera", {})
     clock = None
     if args.video:
@@ -521,8 +538,8 @@ def main():
 
     if not headless:
         # GUI_NORMAL: no Qt toolbar (its save/zoom buttons opened dialogs that spammed the terminal)
-        cv2.namedWindow("Meme Cam", cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
-        cv2.resizeWindow("Meme Cam", W, H)
+        cv2.namedWindow(title, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+        cv2.resizeWindow(title, W, H)
 
     try:
         while True:
@@ -586,9 +603,9 @@ def main():
                     break
                 continue
 
-            cv2.imshow("Meme Cam", frame)
+            cv2.imshow(title, frame)
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27) or not window_open("Meme Cam"):
+            if key in (ord("q"), 27) or not window_open(title):
                 break
             elif key == ord("f"):
                 show_memes = not show_memes

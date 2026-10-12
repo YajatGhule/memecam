@@ -841,3 +841,65 @@ def test_sixty_seven_from_motion_stops():
     swing(det)
     res = swing(det, mode="still", t0=1.5, secs=1.5)
     assert not res[-1]["sixty_seven"].raw
+
+
+# ---------------------------------------------------------------------------------------
+# v2 gestures: godfather 🤌 and looksmaxxing (only with extra_gestures on)
+# ---------------------------------------------------------------------------------------
+
+V2 = {"extra_gestures": True}
+
+
+def pinched_hand(wrist=(820, 520), size=100.0):
+    """All five fingertips bunched together, held up above the wrist."""
+    h = make_hand(OPEN, wrist=wrist, size=size)
+    x, y = wrist
+    tip = np.array([x + 0.05 * size, y - 1.6 * size])
+    for k, off in zip((4, 8, 12, 16, 20), ((-0.08, 0.05), (0.0, -0.06), (0.06, -0.04), (0.1, 0.02), (0.07, 0.08))):
+        h.pts[k, :2] = tip + np.array(off) * size
+    for k in (3, 7, 11, 15, 19):                       # distal joints just below the tips
+        h.pts[k, :2] = h.pts[k + 1, :2] + np.array([0, 0.2 * size])
+    return h
+
+
+def jaw_hand(face):
+    """Index finger laid along the jawline from the side (an "L" under the jaw)."""
+    jaw = face.pts[150, :2]
+    h = make_hand(INDEX, angle=60, wrist=(jaw[0] - 120, jaw[1] + 90), size=90)
+    shift = jaw - h.pts[8, :2]
+    h.pts[:, :2] += shift
+    return h
+
+
+def test_godfather_pinched_fingers():
+    d = run(Detectors(V2), [pinched_hand()], make_face())
+    assert d["godfather"].raw
+    assert not (d["thumbs_up"].raw or d["nerd"].raw or d["middle_finger"].raw or d["gojo"].raw)
+
+
+def test_godfather_off_in_v1():
+    assert not run(Detectors({}), [pinched_hand()], make_face())["godfather"].raw
+
+
+def test_fist_and_open_hand_are_not_godfather():
+    for h in (make_hand(FIST, wrist=(820, 520)), make_hand(OPEN, wrist=(820, 520)), thumbs_up_hand()):
+        assert not run(Detectors(V2), [h], make_face())["godfather"].raw
+
+
+def test_looksmaxxing_finger_on_jaw():
+    face = make_face()
+    face.pts[150, :2] = (FACE_C[0] - 0.4 * FACE_W, FACE_C[1] + 0.32 * FACE_H)
+    d = run(Detectors(V2), [jaw_hand(face)], face)
+    assert d["looksmaxxing"].raw
+    assert not (d["nerd"].raw or d["scuba_cat"].raw or d["higuruma"].raw)
+
+
+def test_chin_on_fist_is_not_looksmaxxing():
+    face = make_face()
+    fist = make_hand(FIST, wrist=(FACE_C[0], FACE_C[1] + 0.75 * FACE_H), size=100)
+    assert not run(Detectors(V2), [fist], face)["looksmaxxing"].raw
+
+
+def test_nerd_beside_face_is_not_looksmaxxing():
+    d = run(Detectors(V2), [make_hand(INDEX, wrist=(820, 420))], make_face())
+    assert d["nerd"].raw and not d["looksmaxxing"].raw

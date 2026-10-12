@@ -100,6 +100,8 @@ WRIST_STRAY = 2.5          # a pose wrist this far (face-widths, sideways) from 
 GHOST_DIST = 2.0           # a face-less pose this close (face-widths) to another person's head is a duplicate
 ID_MAX_JUMP = 1.5           # identity: a head moves at most this many face-widths between frames
 ID_CONFIRM = 2              # identity: frames a person must be seen before a dropout of theirs claims hands
+SCAN_EVERY = 10            # with one person in view, look for more people every this many frames
+CROWD_LINGER = 1.5         # seconds with ≤1 person before going back to the faster 1-person models
 ID_FORGET = 1.0             # seconds an unseen person keeps their id (bridges tracking dropouts only)
 
 
@@ -385,18 +387,38 @@ class Tracker:
         n = self.max_people
         running = vision.RunningMode.VIDEO
         delegate, why = pick_delegate(device)
-        self.hands, d1 = create_task(vision.GestureRecognizer.create_from_options, vision.GestureRecognizerOptions,
-                                     "gesture_recognizer.task", delegate, running_mode=running, num_hands=2 * n,
-                                     min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5,
-                                     min_tracking_confidence=0.5)
-        self.face, d2 = create_task(vision.FaceLandmarker.create_from_options, vision.FaceLandmarkerOptions,
-                                    "face_landmarker.task", delegate, running_mode=running, num_faces=n,
-                                    output_face_blendshapes=True)
-        self.pose, d3 = None, d2
-        if use_pose:
-            self.pose, d3 = create_task(vision.PoseLandmarker.create_from_options, vision.PoseLandmarkerOptions,
-                                        "pose_landmarker_lite.task", delegate, running_mode=running, num_poses=n)
-        self.device = "gpu" if "gpu" in (d1, d2, d3) else "cpu"
+
+        def models(people: int):
+            """(hands, face, pose) tasks sized for `people` people, and the devices they ended up on."""
+            hands, d1 = create_task(vision.GestureRecognizer.create_from_options, vision.GestureRecognizerOptions,
+                                    "gesture_recognizer.task", delegate, running_mode=running, num_hands=2 * people,
+                                    min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5,
+                                    min_tracking_confidence=0.5)
+            # Blendshapes aren't used by any gesture; skipping them saves a model run per face.
+            face, d2 = create_task(vision.FaceLandmarker.create_from_options, vision.FaceLandmarkerOptions,
+                                   "face_landmarker.task", delegate, running_mode=running, num_faces=people,
+                                   output_face_blendshapes=False)
+            pose, d3 = None, d2
+            if use_pose:
+                pose, d3 = create_task(vision.PoseLandmarker.create_from_options, vision.PoseLandmarkerOptions,
+                                       "pose_landmarker_lite.task", delegate, running_mode=running, num_poses=people)
+            return (hands, face, pose), (d1, d2, d3)
+
+        # MediaPipe only skips its (slow) palm/face/person detectors once it is already tracking as many
+        # hands/faces/bodies as it was asked for. Asked for 3 people while 1 is in view, it re-runs them
+        # every frame (hands 51 ms vs 26 ms here). So keep a 1-person set for the usual case, and a
+        # crowd set that runs when several people are in view, plus a periodic scan for newcomers.
+        crowd, devs = models(n)
+        self.crowd_set = crowd
+        self.solo_set = crowd
+        if n > 1:
+            self.solo_set, solo_devs = models(1)
+            devs += solo_devs
+        self.crowd_mode = False
+        self.last_multi = -1e9
+        self.frame_no = 0
+        self.hands, self.face, self.pose = self.solo_set
+        self.device = "gpu" if "gpu" in devs else "cpu"
         print(f"[memecam] tracking on {self.device.upper()} ({why})")
         self.pool = ThreadPoolExecutor(3, thread_name_prefix="tracker")
         self.pose_job: tuple[Future, int, int] | None = None
@@ -409,6 +431,12 @@ class Tracker:
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         hands: list[Hand] = []
         faces: list[Face] = []
+
+        scan = not self.crowd_mode and self.frame_no % SCAN_EVERY == 0
+        self.frame_no += 1
+        self.hands, self.face, pose_task = self.crowd_set if (self.crowd_mode or scan) else self.solo_set
+        if pose_task is not None and self.pose_job is None:
+            self.pose = pose_task
 
         hands_job = self.pool.submit(self.hands.recognize_for_video, image, ts_ms)
         face_job = self.pool.submit(self.face.detect_for_video, image, ts_ms)
@@ -438,6 +466,11 @@ class Tracker:
         people = group_people(faces, self.last_poses, hands, w, self.max_people, self.min_face_width,
                               self.ids.recent(ts_ms / 1000))
         self.ids.assign(people, ts_ms / 1000)
+        now = ts_ms / 1000
+        if len(people) > 1:
+            self.crowd_mode, self.last_multi = True, now
+        elif self.crowd_mode and now - self.last_multi > CROWD_LINGER:
+            self.crowd_mode = False
         main = people[0] if people else Frame()
         out = Frame(hands=main.hands, face=main.face, pose=main.pose, width=w, height=h, pid=main.pid,
                     people=people, renamed=self.ids.renamed)
@@ -454,6 +487,5 @@ class Tracker:
 
     def close(self):
         self.pool.shutdown(wait=True)
-        for t in (self.hands, self.face, self.pose):
-            if t is not None:
-                t.close()
+        for t in {id(t): t for t in (*self.solo_set, *self.crowd_set) if t is not None}.values():
+            t.close()
