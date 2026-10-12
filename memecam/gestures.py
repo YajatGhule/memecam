@@ -162,8 +162,11 @@ class Detectors:
             return [], set()
         mouth, fw = ref
         reach = self.cfg["cover_dist"] * fw
+        # Fingers must reach up over the mouth: hands folded under the chin (resting your head on
+        # them) sit just as close but stay below it.
         self.covering_tracked = [h for h in can_cover if min(np.linalg.norm(h.pts[[0, 5, 9, 13, 17], :2].mean(axis=0) - mouth),
-                          np.linalg.norm(h.pts[9, :2] - mouth)) < reach]
+                          np.linalg.norm(h.pts[9, :2] - mouth)) < reach
+                                 and h.pts[[4, 8, 12, 16, 20], 1].min() < mouth[1]]
         tracked = [self.speed_of(h, fr.hands) for h in self.covering_tracked]
         # The pose model keeps the arms even when the hand tracker loses the hands, but it can't
         # tell an open hand from a fist: an arm only counts if no busy tracked hand sits on it.
@@ -174,6 +177,8 @@ class Detectors:
                 pts = p[list(ends)]
                 pts = pts[pts[:, 3] > 0.3]
                 if not len(pts) or np.linalg.norm(pts[:, :2] - mouth, axis=1).min() > reach:
+                    continue
+                if pts[:, 1].min() > mouth[1]:                  # under the chin, not over the mouth
                     continue
                 wrist = p[ends[0], :2]
                 if any(np.linalg.norm(h.pts[0, :2] - wrist) < 1.5 * h.size for h in busy):
@@ -390,7 +395,17 @@ class Detectors:
             return tip_gap(h) < c["cross_dist"] or flip
 
         # The pinky is often misread as straight with the fingers crossed, so it isn't checked.
-        gojo = find(lambda h, s: s["index"] and s["middle"] and not s["ring"] and crossed(h))
+        # Fingers clasped together (e.g. chin resting on folded hands) interlace and look crossed: the
+        # sign is one hand on its own, fingers pointing up.
+        def alone(h):
+            return all(o is h or np.linalg.norm(o.pts[9, :2] - h.pts[9, :2]) > 1.5 * h.size for o in hands)
+
+        def fingers_up(h):
+            v = h.pts[12, :2] - h.pts[0, :2]
+            return -v[1] > 0.5 * np.linalg.norm(v)
+
+        gojo = find(lambda h, s: s["index"] and s["middle"] and not s["ring"] and crossed(h)
+                    and alone(h) and fingers_up(h))
         d["gojo"] = Detection(gojo is not None, 1.0 if gojo else 0.0, gojo.bbox if gojo else fbox)
 
         # A V sign (two fingers clearly spread) has no meme, but it is a finger sign: it mustn't read as

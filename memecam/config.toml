@@ -50,9 +50,10 @@ asset = "dafoe_lookup.gif"
 title = "WILLEM DAFOE"
 placement = "tr"
 height = 0.34
+hold = 0.45               # a quick lean back while moving isn't a look up
 
 [memes.gojo]              # index + middle finger crossed (Infinite Void sign)
-asset = "gojo_nah_id_win.gif"
+asset = "gojo_nah_id_win_manga.png"
 title = "NAH, I'D WIN"
 placement = "bl"
 height = 0.45
