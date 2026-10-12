@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+from collections import OrderedDict
 from pathlib import Path
 
 import cv2
@@ -75,6 +76,32 @@ class Media:
         return self.frames[min(i, len(self.frames) - 1)]
 
 
+class _Cache:
+    """Small LRU of derived images keyed on (id(source), ...): holds the source too so its id stays valid."""
+
+    def __init__(self, max_bytes: int = 96 << 20):
+        self.max_bytes, self.bytes = max_bytes, 0
+        self.items: OrderedDict[tuple, tuple[np.ndarray, np.ndarray]] = OrderedDict()
+
+    def get(self, src: np.ndarray, key: tuple, make) -> np.ndarray:
+        k = (id(src), *key)
+        hit = self.items.get(k)
+        if hit is not None and hit[0] is src:
+            self.items.move_to_end(k)
+            return hit[1]
+        out = make()
+        self.items[k] = (src, out)
+        self.bytes += out.nbytes
+        while self.bytes > self.max_bytes and len(self.items) > 1:
+            _, (_, old) = self.items.popitem(last=False)
+            self.bytes -= old.nbytes
+        return out
+
+
+_fit_cache = _Cache()
+_panel_cache = _Cache()
+
+
 def blend(dst: np.ndarray, src: np.ndarray, x: int, y: int, alpha: float = 1.0) -> None:
     """Alpha-blend BGRA `src` onto BGR `dst` with top-left at (x, y), clipped to the frame."""
     h, w = src.shape[:2]
@@ -83,23 +110,34 @@ def blend(dst: np.ndarray, src: np.ndarray, x: int, y: int, alpha: float = 1.0) 
     if x0 >= x1 or y0 >= y1:
         return
     s = src[y0 - y:y1 - y, x0 - x:x1 - x]
-    a = s[:, :, 3:4].astype(np.float32) * (alpha / 255.0)
+    a = s[:, :, 3]
+    if alpha < 1.0:
+        a = cv2.convertScaleAbs(a, alpha=alpha)
+    a3 = cv2.merge((a, a, a))
     roi = dst[y0:y1, x0:x1]
-    roi[:] = (s[:, :, :3] * a + roi * (1 - a)).astype(np.uint8)
+    # Same as src*a + dst*(1-a) in float (±1 rounding), but in saturating uint8 ops: ~10x faster.
+    fg = cv2.multiply(np.ascontiguousarray(s[:, :, :3]), a3, scale=1 / 255)
+    bg = cv2.multiply(roi, cv2.bitwise_not(a3), scale=1 / 255)
+    roi[:] = cv2.add(fg, bg)
 
 
 def fit(img: np.ndarray, height: int) -> np.ndarray:
-    h, w = img.shape[:2]
-    return cv2.resize(img, (max(1, int(w * height / h)), height), interpolation=cv2.INTER_AREA)
+    """Resize to `height` keeping the aspect ratio. Cached: memes show the same GIF frames over and over."""
+    def make():
+        h, w = img.shape[:2]
+        return cv2.resize(img, (max(1, int(w * height / h)), height), interpolation=cv2.INTER_AREA)
+    return _fit_cache.get(img, (height,), make)
 
 
 def panel(dst: np.ndarray, img: np.ndarray, x: int, y: int, title: str, alpha: float, accent=(80, 220, 255)):
     """Meme in a HUD-style frame with a title tab."""
-    h, w = img.shape[:2]
-    framed = np.zeros((h + 6, w + 6, 4), np.uint8)
-    framed[:, :] = (*accent, 255)
-    framed[3:-3, 3:-3] = img
-    blend(dst, framed, x, y, alpha)
+    def make():
+        h, w = img.shape[:2]
+        framed = np.zeros((h + 6, w + 6, 4), np.uint8)
+        framed[:, :] = (*accent, 255)
+        framed[3:-3, 3:-3] = img
+        return framed
+    blend(dst, _panel_cache.get(img, tuple(accent), make), x, y, alpha)
     if title and alpha > 0.5:
         (tw, th), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(dst, (x, y - th - 10), (x + tw + 10, y), accent, -1)
@@ -143,9 +181,11 @@ def warp_on_face(dst: np.ndarray, img: np.ndarray, face_pts: np.ndarray, alpha: 
     size = (int(x1 - x0), int(y1 - y0))
     warped = cv2.warpPerspective(img, M, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
     mask = cv2.warpPerspective(_oval(h, w), M, size)
-    a = (mask.astype(np.float32) * (warped[:, :, 3] / 255.0 / 255.0) * alpha)[..., None]
+    a = cv2.multiply(mask, np.ascontiguousarray(warped[:, :, 3]), scale=alpha / 255)
+    a3 = cv2.merge((a, a, a))
     roi = dst[y0:y1, x0:x1]
-    np.copyto(roi, (warped[:, :, :3] * a + roi * (1 - a)).astype(np.uint8))
+    fg = cv2.multiply(np.ascontiguousarray(warped[:, :, :3]), a3, scale=1 / 255)
+    roi[:] = cv2.add(fg, cv2.multiply(roi, cv2.bitwise_not(a3), scale=1 / 255))
 
 
 class CinemaEffect:

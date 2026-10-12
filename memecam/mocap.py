@@ -51,37 +51,50 @@ def _tag(img, pt, text, color):
     cv2.putText(img, text, (x + 12, y - 12), FONT, 0.33, color, 1, cv2.LINE_AA)
 
 
+FACE_EDGE_IDX = np.array(FACE_EDGES)
+HAND_EDGE_IDX = np.array(HAND_EDGES)
+POSE_EDGE_IDX = np.array(POSE_EDGES)
+POSE_DOTS = [i for i in range(11, 33) if i not in range(17, 23)]
+
+
+def _segments(pts: np.ndarray, edges: np.ndarray) -> list[np.ndarray]:
+    """Edges as 2-point int polylines, so all of them go to OpenCV in one polylines() call."""
+    return list(pts[edges][:, :, :2].astype(np.int32))
+
+
 def draw(img: np.ndarray, fr: Frame) -> None:
     """Draw markers in place. Glow comes from a blurred copy of the marker layer."""
     layer = np.zeros_like(img)
 
     if fr.pose is not None:
         vis = fr.pose[:, 3] > 0.5
-        for a, b in POSE_EDGES:
-            if vis[a] and vis[b]:
-                cv2.line(layer, _p(fr.pose[a]), _p(fr.pose[b]), POSE_COL, 2, cv2.LINE_AA)
-        for i in range(11, 33):
-            if vis[i] and i not in range(17, 23):
-                cv2.circle(layer, _p(fr.pose[i]), 5, POSE_COL, -1, cv2.LINE_AA)
+        edges = POSE_EDGE_IDX[vis[POSE_EDGE_IDX].all(axis=1)]
+        if len(edges):
+            cv2.polylines(layer, _segments(fr.pose, edges), False, POSE_COL, 2, cv2.LINE_AA)
+        ip = fr.pose[:, :2].astype(np.int32).tolist()
+        for i in POSE_DOTS:
+            if vis[i]:
+                cv2.circle(layer, ip[i], 5, POSE_COL, -1, cv2.LINE_AA)
 
     if fr.face is not None:
         pts = fr.face.pts
-        for a, b in FACE_EDGES:
-            cv2.line(layer, _p(pts[a]), _p(pts[b]), FACE_COL, 1, cv2.LINE_AA)
+        cv2.polylines(layer, _segments(pts, FACE_EDGE_IDX), False, FACE_COL, 1, cv2.LINE_AA)
+        ip = pts[:, :2].astype(np.int32).tolist()
         for i in FACE_DOTS:
-            cv2.circle(layer, _p(pts[i]), 2, FACE_COL, -1, cv2.LINE_AA)
+            cv2.circle(layer, ip[i], 2, FACE_COL, -1, cv2.LINE_AA)
         for i in (1, 152, 33, 263, 10):
-            cv2.circle(layer, _p(pts[i]), 4, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(layer, ip[i], 4, (255, 255, 255), -1, cv2.LINE_AA)
 
     for hand in fr.hands:
-        for a, b in HAND_EDGES:
-            cv2.line(layer, _p(hand.pts[a]), _p(hand.pts[b]), HAND_COL, 2, cv2.LINE_AA)
-        for i, pt in enumerate(hand.pts):
-            cv2.circle(layer, _p(pt), 5 if i in HAND_LABELS else 3, HAND_COL, -1, cv2.LINE_AA)
+        cv2.polylines(layer, _segments(hand.pts, HAND_EDGE_IDX), False, HAND_COL, 2, cv2.LINE_AA)
+        for i, pt in enumerate(hand.pts[:, :2].astype(np.int32).tolist()):
+            cv2.circle(layer, pt, 5 if i in HAND_LABELS else 3, HAND_COL, -1, cv2.LINE_AA)
 
+    # Glow: blur a quarter-size copy, double it there (img + glow + glow == img + 2*glow with saturation),
+    # and upscale once, instead of two full-frame adds.
     small = cv2.resize(layer, None, fx=0.25, fy=0.25)
-    glow = cv2.resize(cv2.GaussianBlur(small, (0, 0), 3), (img.shape[1], img.shape[0]))
-    cv2.add(img, glow, dst=img)
+    small = cv2.GaussianBlur(small, (0, 0), 3)
+    glow = cv2.resize(cv2.add(small, small), (img.shape[1], img.shape[0]))
     cv2.add(img, glow, dst=img)
     # Gray > 0 as the "something drawn here" mask: layer.any(axis=2) + boolean indexing took ~30 ms/frame.
     cv2.copyTo(layer, cv2.cvtColor(layer, cv2.COLOR_BGR2GRAY), img)
