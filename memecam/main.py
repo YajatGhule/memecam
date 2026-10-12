@@ -20,7 +20,7 @@ import numpy as np
 from . import mocap
 from .gestures import Detection, Detectors, Trigger
 from .overlays import CinemaEffect, Media, blend, fit, panel, place_beside, warp_on_face
-from .tracking import ID_FORGET, Frame, Tracker, head_box
+from .tracking import ID_FORGET, Frame, Tracker, hands_box, head_box
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
@@ -87,7 +87,7 @@ class Person:
         self.detectors = Detectors(thresholds)
         self.memes = {k: m.clone() for k, m in templates.items()}
         self.last_seen = 0.0
-        self.head: tuple[int, int, int, int] | None = None     # last known head box
+        self.head: tuple[int, int, int, int] | None = None     # head box in the current frame (None if absent)
 
 
 @dataclass
@@ -100,39 +100,46 @@ class Shown:
 
 class Crowd:
     """Everyone in view: one Person (detectors + memes) per tracked person id, so each person's memes
-    fire independently. State of people unseen for `forget` seconds is dropped."""
+    fire independently.
+
+    Only people detected in the current tracking result are run and shown. Someone who drops out keeps
+    their (frozen, not updated) state for `forget` seconds, so a brief tracking dropout doesn't reset their
+    id or triggers, but nothing of theirs is drawn meanwhile; after that their state is dropped."""
 
     def __init__(self, cfg: dict, load_media: bool = True, templates: dict[str, Meme] | None = None):
         self.thresholds = cfg.get("thresholds", {})
         self.templates = templates if templates is not None else load_memes(cfg, load_media)
         self.forget = cfg.get("people", {}).get("forget", ID_FORGET)
         self.people: dict[int, Person] = {}
+        self.present: list[int] = []        # pids detected in the latest update, in frame order
 
     def calibrate(self):
         for p in self.people.values():
             p.detectors.calibrate()
 
     def update(self, fr: Frame, now: float, force=()) -> dict[int, dict[str, Detection]]:
-        """Run every person's detectors and triggers. Returns detections per person id."""
+        """Run the detectors and triggers of everyone in the current frame. Returns detections per person id."""
         people = fr.people if fr.people else ([fr] if fr.pid else [])
+        for pid, st in list(self.people.items()):
+            if now - st.last_seen > self.forget:
+                del self.people[pid]
+        for old, new in getattr(fr, "renamed", {}).items():   # ids renumbered by the tracker
+            if old in self.people:
+                st = self.people.pop(old)
+                st.pid = new
+                self.people[new] = st
+        for st in self.people.values():
+            st.head = None
         out: dict[int, dict[str, Detection]] = {}
+        self.present = []
         for q in people:
             st = self.people.get(q.pid)
             if st is None:
                 st = self.people[q.pid] = Person(q.pid, self.thresholds, self.templates)
             st.last_seen = now
-            st.head = head_box(q) or st.head
+            st.head = head_box(q) or hands_box(q)
             out[q.pid] = self._run(st, q, now, force if q is people[0] else ())
-        if not people and self.people:
-            # Nobody in view: the last person seen keeps decaying their motion stats (as with one person).
-            st = max(self.people.values(), key=lambda p: p.last_seen)
-            out[st.pid] = self._run(st, fr, now, force)
-        for pid, st in list(self.people.items()):
-            if now - st.last_seen > self.forget:
-                del self.people[pid]
-            elif pid not in out:
-                for meme in st.memes.values():
-                    meme.update(Detection(False, 0.0), now)
+            self.present.append(q.pid)
         return out
 
     @staticmethod
@@ -145,8 +152,9 @@ class Crowd:
         return dets
 
     def snapshot(self) -> list[Shown]:
-        return [Shown(p.pid, p.head, {k: copy.copy(m) for k, m in p.memes.items()})
-                for p in sorted(self.people.values(), key=lambda p: p.pid)]
+        """Copies of the memes of the people in the current frame only (absent people show nothing)."""
+        return [Shown(pid, self.people[pid].head, {k: copy.copy(m) for k, m in self.people[pid].memes.items()})
+                for pid in sorted(self.present)]
 
 
 def step_crowd(tracker: Tracker, crowd: Crowd, frame: np.ndarray, now: float, ts: int,
@@ -159,7 +167,7 @@ def step_crowd(tracker: Tracker, crowd: Crowd, frame: np.ndarray, now: float, ts
 def tracker_from_config(cfg: dict, use_pose: bool = True, pose_async: bool = True) -> Tracker:
     pc = cfg.get("people", {})
     return Tracker(use_pose=use_pose, pose_async=pose_async, max_people=pc.get("max_people", 3),
-                   min_face_width=pc.get("min_face_width", 0.08))
+                   min_face_width=pc.get("min_face_width", 0.08), forget=pc.get("forget", ID_FORGET))
 
 
 class VideoClock:

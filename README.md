@@ -60,8 +60,12 @@ triggers, so everyone's memes fire independently and show up on (or next to) tha
 - Each face takes the body pose whose nose is nearest; a pose without a face (hands over it) is still a person.
   Each hand goes to the person whose pose wrist is nearest, else to the nearest face within ~3.5 face widths;
   other hands are ignored. With just one person in view, every hand is theirs (same as before).
-- Ids follow the head from frame to frame; someone out of view for more than `[people] forget` seconds (2 s)
-  loses their id and meme state. With several corner panels of the same kind, they sit side by side.
+- A person's markers, box and memes are drawn only while they are detected in the current frame; the moment
+  they leave, everything of theirs disappears. Their state is kept (frozen, nothing runs for them) for just
+  `[people] forget` seconds (0.4 s) so a brief tracking dropout keeps the same id, then it is dropped.
+- Ids follow the head from frame to frame. One person in view is `PERSON_01`; a `PERSON_02` appears only when a
+  second person is in view. Newcomers take the lowest free id, and when only one person is left they become
+  `PERSON_01` again. With several corner panels of the same kind, they sit side by side.
 - More people cost more tracking time (face and hand models run per person); lower `max_people` if FPS drops.
 
 The detectors were tuned on real recordings. To re-check after changing thresholds:

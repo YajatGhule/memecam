@@ -103,19 +103,39 @@ def test_ids_stable_when_people_move_and_swap_order():
 
 
 def test_new_person_gets_new_id_and_ids_expire():
-    ids = Identities(forget=2.0)
+    ids = Identities(forget=0.4)
     a = group_people([face_at(LEFT)], [], [], W)
     ids.assign(a, 0.0)
+    assert a[0].pid == 1
     b = group_people([face_at(LEFT), face_at(RIGHT)], [], [], W)
     ids.assign(b, 0.1)
     assert sorted(q.pid for q in b) == [1, 2]
-    ids.assign(group_people([face_at(RIGHT)], [], [], W), 0.2)
     c = group_people([face_at(RIGHT)], [], [], W)
-    ids.assign(c, 2.15)
-    assert c[0].pid == 2                        # person 2 kept their id...
+    ids.assign(c, 0.3)
+    assert c[0].pid == 2 and not ids.renamed     # person 1 just dropped out: within the grace, ids kept
     d = group_people([face_at(RIGHT), face_at(LEFT)], [], [], W)
-    ids.assign(d, 2.2)
-    assert {q.pid for q in d} == {1, 2}         # ...and id 1 (gone > 2 s) is free again
+    ids.assign(d, 0.4)
+    assert {round(q.face.pts[1, 0]): q.pid for q in d} == {round(LEFT): 1, round(RIGHT): 2}
+    for t in (0.6, 0.7):
+        e = group_people([face_at(RIGHT)], [], [], W)
+        ids.assign(e, t)
+        assert e[0].pid == 2                     # person 1 still within the grace
+    e = group_people([face_at(RIGHT)], [], [], W)
+    ids.assign(e, 0.9)                           # person 1 gone > 0.4 s: the one left becomes PERSON_01
+    assert e[0].pid == 1 and ids.renamed == {2: 1}
+    f = group_people([face_at(RIGHT), face_at(LEFT)], [], [], W)
+    ids.assign(f, 1.0)                           # a newcomer takes the lowest free id
+    assert {round(q.face.pts[1, 0]): q.pid for q in f} == {round(RIGHT): 1, round(LEFT): 2}
+
+
+def test_face_after_hands_only_keeps_the_id():
+    """Hands seen first (face covered), then the face: still one person, PERSON_01."""
+    ids = Identities()
+    a = group_people([], [], [make_hand(OPEN, wrist=(600, 500))], W)
+    ids.assign(a, 0.0)
+    b = group_people([face_at(LEFT)], [], [], W)
+    ids.assign(b, 0.05)
+    assert a[0].pid == 1 and b[0].pid == 1
 
 
 def test_two_thumbs_up_fire_two_memes_with_their_own_anchors():
@@ -169,21 +189,59 @@ def test_snapshot_is_a_copy():
     crowd = Crowd(cfg, load_media=False)
     fr = Frame(face=face_at(LEFT), pid=1, width=W, height=H)
     fr.people = [fr]
-    crowd.update(fr, 0.0, force=("thumbs_up",))
-    crowd.update(fr, 0.5, force=("thumbs_up",))
+    for k in range(16):
+        crowd.update(fr, k / 30, force=("thumbs_up",))
     shot = crowd.snapshot()
     assert shot[0].memes["thumbs_up"].started is not None
     crowd.people[1].memes["thumbs_up"].started = None
     assert shot[0].memes["thumbs_up"].started is not None
 
 
-def test_state_dropped_after_person_leaves():
+def _crowd_frame(*people):
+    top = Frame(width=W, height=H, people=list(people))
+    if people:
+        top.pid = people[0].pid
+    return top
+
+
+def test_absent_person_is_not_shown_or_run_and_dropped_after_grace():
     cfg = tomllib.loads(CONFIG.read_text())
     crowd = Crowd(cfg, load_media=False)
-    a, b = Frame(face=face_at(LEFT), pid=1, width=W, height=H), Frame(face=face_at(RIGHT), pid=2, width=W, height=H)
-    crowd.update(Frame(width=W, height=H, people=[a, b]), 0.0)
-    assert set(crowd.people) == {1, 2}
-    crowd.update(Frame(width=W, height=H, people=[a]), 1.0)
-    assert set(crowd.people) == {1, 2}
-    crowd.update(Frame(width=W, height=H, people=[a]), 2.5)
-    assert set(crowd.people) == {1}
+    forget = crowd.forget
+    assert forget <= 0.5
+    a = Frame(face=face_at(LEFT), pid=1, width=W, height=H)
+    b = Frame(face=face_at(RIGHT), pid=2, width=W, height=H)
+    for k in range(16):
+        crowd.update(_crowd_frame(a, b), k / 30, force=("thumbs_up",))
+    assert {s.pid for s in crowd.snapshot()} == {1, 2}
+    t = 0.5 + forget / 2
+    dets = crowd.update(_crowd_frame(b), t)                 # person 1 drops out
+    assert set(dets) == {2}                                 # only person 2's detectors ran
+    assert [s.pid for s in crowd.snapshot()] == [2]         # nothing drawn for person 1
+    assert crowd.people[1].head is None and set(crowd.people) == {1, 2}   # state kept for the grace only
+    crowd.update(_crowd_frame(b), 0.5 + forget * 1.5)
+    assert set(crowd.people) == {2}
+
+
+def test_nobody_in_view_shows_nothing():
+    cfg = tomllib.loads(CONFIG.read_text())
+    crowd = Crowd(cfg, load_media=False)
+    a = Frame(face=face_at(LEFT), pid=1, width=W, height=H)
+    for k in range(20):
+        crowd.update(_crowd_frame(a), k / 30, force=("thumbs_up",))
+    assert crowd.snapshot()[0].memes["thumbs_up"].started is not None
+    assert crowd.update(Frame(width=W, height=H), 0.7) == {}
+    assert crowd.snapshot() == []
+
+
+def test_renamed_ids_carry_their_state():
+    cfg = tomllib.loads(CONFIG.read_text())
+    crowd = Crowd(cfg, load_media=False)
+    b = Frame(face=face_at(RIGHT), pid=2, width=W, height=H)
+    crowd.update(_crowd_frame(b), 0.0)
+    st = crowd.people[2]
+    b1 = Frame(face=face_at(RIGHT), pid=1, width=W, height=H)
+    top = _crowd_frame(b1)
+    top.renamed = {2: 1}
+    crowd.update(top, 0.1)
+    assert crowd.people == {1: st} and st.pid == 1

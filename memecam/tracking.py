@@ -86,6 +86,7 @@ class Frame:
     height: int = 0
     pid: int = 0                         # persistent person id (1, 2, ...); 0 = not assigned
     people: list[Frame] = field(default_factory=list)   # every person, primary first (top-level frame only)
+    renamed: dict[int, int] = field(default_factory=dict)  # ids renumbered this frame, old -> new (top-level only)
 
 
 # ---- people: grouping faces / poses / hands, and stable ids ----------------------------------
@@ -95,7 +96,7 @@ POSE_FACE_MATCH = 1.5       # a pose's nose within this many face-widths of a fa
 HAND_WRIST_MATCH = 1.2      # hand wrist within this many face-widths of a pose wrist = that person's hand
 HAND_FACE_MATCH = 3.5       # ...else within this many face-widths of a face = that person's hand
 ID_MAX_JUMP = 1.5           # identity: a head moves at most this many face-widths between frames
-ID_FORGET = 2.0             # seconds an unseen person keeps their id
+ID_FORGET = 0.4             # seconds an unseen person keeps their id (bridges tracking dropouts only)
 
 
 def pose_face_width(pose: np.ndarray) -> float:
@@ -122,6 +123,14 @@ def head_box(person: Frame) -> tuple[int, int, int, int] | None:
         (x, y), r = person.pose[0, :2], 0.5 * pose_face_width(person.pose)
         return int(x - r), int(y - 1.25 * r), int(x + r), int(y + 1.25 * r)
     return None
+
+
+def hands_box(person: Frame) -> tuple[int, int, int, int] | None:
+    """Box around a person's hands (for a hands-only person, whose hands usually cover the face)."""
+    if not person.hands:
+        return None
+    b = np.array([h.bbox for h in person.hands])
+    return int(b[:, 0].min()), int(b[:, 1].min()), int(b[:, 2].max()), int(b[:, 3].max())
 
 
 def group_people(faces: list[Face], poses: list[np.ndarray], hands: list[Hand], width: int,
@@ -154,6 +163,13 @@ def group_people(faces: list[Face], poses: list[np.ndarray], hands: list[Hand], 
         if hands:
             people = [Frame(hands=sorted(hands, key=lambda h: -h.size)[:2])]
         return people
+    if len(people) == 1:                        # one person: every hand is theirs, no matching needed
+        if len(hands) > 2:
+            nose = head_of(people[0])[0]
+            near = sorted(hands, key=lambda h: float(np.linalg.norm(h.pts[0, :2] - nose)))[:2]
+            hands = [h for h in hands if any(h is x for x in near)]
+        people[0].hands = list(hands)
+        return people
 
     heads = [head_of(q) for q in people]
     cands = []                                  # (cost, hand index, person index)
@@ -179,14 +195,24 @@ def group_people(faces: list[Face], poses: list[np.ndarray], hands: list[Hand], 
 
 
 class Identities:
-    """Persistent person ids: nearest-neighbour matching of head positions between frames."""
+    """Persistent person ids: nearest-neighbour matching of head positions between frames.
+
+    An unseen person keeps their id for `forget` seconds (a short tracking dropout), then it is free
+    again. New people take the lowest free id, and when only one person is left they become id 1
+    (`renamed` lists the renumbering of the latest assign(), old -> new)."""
 
     def __init__(self, max_jump: float = ID_MAX_JUMP, forget: float = ID_FORGET):
         self.max_jump, self.forget = max_jump, forget
         self.tracks: dict[int, tuple[np.ndarray | None, float, float]] = {}   # pid -> (nose, face width, last seen)
+        self.renamed: dict[int, int] = {}
 
     def assign(self, people: list[Frame], now: float) -> None:
         self.tracks = {k: v for k, v in self.tracks.items() if now - v[2] <= self.forget}
+        self.renamed = {}
+        if len(self.tracks) == 1 and 1 not in self.tracks:     # alone again: back to PERSON_01
+            (old, v), = self.tracks.items()
+            self.tracks = {1: v}
+            self.renamed = {old: 1}
         heads = [head_of(q) for q in people]
         pairs = []
         for i, hd in enumerate(heads):
@@ -203,8 +229,9 @@ class Identities:
                 done[i] = pid
         for i, q in enumerate(people):
             if i not in done:
-                free = [pid for pid in self.tracks if pid not in done.values()]
-                if heads[i] is None and free:       # hands only: whoever was seen most recently
+                free = [pid for pid in self.tracks if pid not in done.values()
+                        and (heads[i] is None or self.tracks[pid][0] is None)]
+                if free:        # hands only: whoever was seen most recently; a face for a hands-only track
                     done[i] = max(free, key=lambda pid: self.tracks[pid][2])
                 else:
                     done[i] = next(n for n in range(1, len(self.tracks) + len(people) + 2)
@@ -224,10 +251,10 @@ def motion_gray(rgb: np.ndarray) -> np.ndarray:
 
 class Tracker:
     def __init__(self, use_pose: bool = True, pose_async: bool = True, max_people: int = 3,
-                 min_face_width: float = 0.08):
+                 min_face_width: float = 0.08, forget: float = ID_FORGET):
         self.pose_async = pose_async
         self.max_people, self.min_face_width = max(1, int(max_people)), float(min_face_width)
-        self.ids = Identities()
+        self.ids = Identities(forget=forget)
         n = self.max_people
         running = vision.RunningMode.VIDEO
         self.hands = vision.GestureRecognizer.create_from_options(vision.GestureRecognizerOptions(
@@ -284,7 +311,7 @@ class Tracker:
         self.ids.assign(people, ts_ms / 1000)
         main = people[0] if people else Frame()
         out = Frame(hands=main.hands, face=main.face, pose=main.pose, width=w, height=h, pid=main.pid,
-                    people=people)
+                    people=people, renamed=self.ids.renamed)
 
         # Frame differencing: fast-moving hands blur and drop out of the hand tracker, but they
         # still light up the difference image (used for "talking to a wall").
