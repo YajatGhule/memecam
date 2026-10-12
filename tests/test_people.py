@@ -4,7 +4,7 @@ from __future__ import annotations
 import tomllib
 
 import numpy as np
-from test_gestures import FACE_C, OPEN, PEACE, make_face, make_hand, make_pose
+from test_gestures import FACE_C, FIST, OPEN, PEACE, make_face, make_hand, make_pose
 
 from memecam.main import CONFIG, Crowd
 from memecam.tracking import MOTION_H, MOTION_W, Frame, Identities, group_people
@@ -27,6 +27,10 @@ def pose_at(x, wl_dx=-150, wr_dx=150, wy=560, dy=0.0):
 
 def peace_hand(x, y=420):
     return make_hand(PEACE, wrist=(x, y), size=90)
+
+
+def thumbs_hand(x, y=420):
+    return make_hand(FIST, wrist=(x, y), size=90, gesture="Thumb_Up")
 
 
 def test_hands_go_to_the_person_whose_wrist_is_nearest():
@@ -114,14 +118,14 @@ def test_new_person_gets_new_id_and_ids_expire():
     assert {q.pid for q in d} == {1, 2}         # ...and id 1 (gone > 2 s) is free again
 
 
-def test_two_peace_signs_fire_two_memes_with_their_own_anchors():
+def test_two_thumbs_up_fire_two_memes_with_their_own_anchors():
     cfg = tomllib.loads(CONFIG.read_text())
     crowd = Crowd(cfg, load_media=False)
     ids = Identities()
     motion = np.zeros((MOTION_H, MOTION_W), bool)
     for k in range(30):
         now = k / 30
-        hands = [peace_hand(LEFT + 180), peace_hand(RIGHT - 180)]
+        hands = [thumbs_hand(LEFT + 180), thumbs_hand(RIGHT - 180)]
         people = group_people([face_at(LEFT), face_at(RIGHT)], [], hands, W)
         ids.assign(people, now)
         for q in people:
@@ -130,12 +134,12 @@ def test_two_peace_signs_fire_two_memes_with_their_own_anchors():
                    width=W, height=H, people=people)
         dets = crowd.update(fr, now)
     assert set(dets) == {1, 2}
-    assert dets[1]["peace"].raw and dets[2]["peace"].raw
-    assert dets[1]["peace"].anchor != dets[2]["peace"].anchor
+    assert dets[1]["thumbs_up"].raw and dets[2]["thumbs_up"].raw
+    assert dets[1]["thumbs_up"].anchor != dets[2]["thumbs_up"].anchor
     shown = crowd.snapshot()
-    on = {s.pid: s.memes["peace"].started is not None for s in shown}
+    on = {s.pid: s.memes["thumbs_up"].started is not None for s in shown}
     assert on == {1: True, 2: True}
-    anchors = {s.pid: s.memes["peace"].anchor for s in shown}
+    anchors = {s.pid: s.memes["thumbs_up"].anchor for s in shown}
     assert anchors[1] != anchors[2]
     # each anchor sits on its own person's side
     centre = {q.pid: q.face.pts[1, 0] for q in people}
@@ -150,13 +154,13 @@ def test_one_persons_meme_does_not_fire_for_the_other():
     ids = Identities()
     motion = np.zeros((MOTION_H, MOTION_W), bool)
     for k in range(30):
-        people = group_people([face_at(LEFT), face_at(RIGHT)], [], [peace_hand(RIGHT - 180)], W)
+        people = group_people([face_at(LEFT), face_at(RIGHT)], [], [thumbs_hand(RIGHT - 180)], W)
         ids.assign(people, k / 30)
         for q in people:
             q.motion, q.width, q.height = motion, W, H
         crowd.update(Frame(motion=motion, width=W, height=H, people=people), k / 30)
     right = next(q.pid for q in people if q.face.pts[1, 0] == RIGHT)
-    on = {s.pid: s.memes["peace"].started is not None for s in crowd.snapshot()}
+    on = {s.pid: s.memes["thumbs_up"].started is not None for s in crowd.snapshot()}
     assert on[right] and not on[3 - right]
 
 
@@ -165,12 +169,12 @@ def test_snapshot_is_a_copy():
     crowd = Crowd(cfg, load_media=False)
     fr = Frame(face=face_at(LEFT), pid=1, width=W, height=H)
     fr.people = [fr]
-    crowd.update(fr, 0.0, force=("peace",))
-    crowd.update(fr, 0.5, force=("peace",))
+    crowd.update(fr, 0.0, force=("thumbs_up",))
+    crowd.update(fr, 0.5, force=("thumbs_up",))
     shot = crowd.snapshot()
-    assert shot[0].memes["peace"].started is not None
-    crowd.people[1].memes["peace"].started = None
-    assert shot[0].memes["peace"].started is not None
+    assert shot[0].memes["thumbs_up"].started is not None
+    crowd.people[1].memes["thumbs_up"].started = None
+    assert shot[0].memes["thumbs_up"].started is not None
 
 
 def test_state_dropped_after_person_leaves():

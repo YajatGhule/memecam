@@ -149,7 +149,7 @@ def test_extended_ratio_has_margin():
 # single-hand pose exclusivity
 # ---------------------------------------------------------------------------------------
 
-HAND_POSES = {"middle_finger", "peace", "nerd"}
+HAND_POSES = {"middle_finger", "thumbs_up", "nerd"}
 
 
 @pytest.mark.parametrize("angle", [0, 20, -20])
@@ -158,10 +158,35 @@ def test_middle_finger_only(angle):
     assert raws(d) & HAND_POSES == {"middle_finger"}
 
 
+def thumbs_up_hand(wrist=(640, 400), size=110.0, gesture="None"):
+    """Fist with the thumb sticking straight up."""
+    h = make_hand(FIST, wrist=wrist, size=size, gesture=gesture)
+    x, y = wrist
+    h.pts[1:5, :2] = [(x - 0.35 * size, y - 0.25 * size), (x - 0.45 * size, y - 0.55 * size),
+                      (x - 0.50 * size, y - 0.85 * size), (x - 0.52 * size, y - 1.10 * size)]
+    return h
+
+
 @pytest.mark.parametrize("angle", [0, 30, -30, 90])
-def test_peace_only(angle):
+def test_v_sign_fires_nothing(angle):
+    """The peace sign no longer has a meme (piece of cake was removed)."""
     d = run(Detectors({}), [make_hand(PEACE, angle=angle)])
-    assert raws(d) & HAND_POSES == {"peace"}
+    assert raws(d) & HAND_POSES == set()
+
+
+def test_thumbs_up_from_geometry():
+    d = run(Detectors({}), [thumbs_up_hand()])
+    assert raws(d) & HAND_POSES == {"thumbs_up"}
+    assert not d["mahoraga"].raw
+
+
+def test_thumbs_up_from_mediapipe_label():
+    d = run(Detectors({}), [make_hand(FIST, gesture="Thumb_Up")])
+    assert d["thumbs_up"].raw
+
+
+def test_plain_fist_is_not_thumbs_up():
+    assert not run(Detectors({}), [make_hand(FIST)])["thumbs_up"].raw
 
 
 @pytest.mark.parametrize("angle", [0, 30, -30, 45])
@@ -352,12 +377,12 @@ def crossed_hand(angle=0.0):
 def test_gojo_crossed_fingers(angle):
     d = run(Detectors({}), [crossed_hand(angle)], make_face())
     assert d["gojo"].raw
-    assert not d["peace"].raw and not d["nerd"].raw
+    assert not d["nerd"].raw
 
 
-def test_peace_is_not_gojo():
+def test_v_sign_is_not_gojo():
     d = run(Detectors({}), [make_hand(PEACE)], make_face())
-    assert d["peace"].raw and not d["gojo"].raw
+    assert not d["gojo"].raw and not d["nerd"].raw
 
 
 def neutral(det, n=30, ratio=0.6, t0=0.0):
@@ -451,9 +476,9 @@ def test_talking_to_wall_slow_drift():
     assert not any(r["talking_to_wall"].raw for r in res)
 
 
-def test_talking_to_wall_suppressed_by_peace():
-    res = wave(Detectors({}), ext=PEACE, two=False)
-    assert all(r["peace"].raw for r in res)
+def test_talking_to_wall_suppressed_by_middle_finger():
+    res = wave(Detectors({}), ext=MIDDLE, two=False)
+    assert all(r["middle_finger"].raw for r in res)
     assert not any(r["talking_to_wall"].raw for r in res)
 
 

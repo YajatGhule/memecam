@@ -24,7 +24,7 @@ DEFAULTS = {
     "finger_extended_ratio": 1.15,   # |wrist→tip| / |wrist→pip| above this = extended
     "cover_dist": 0.75,              # hand within this many face-widths of nose/mouth = covering it
     "cross_dist": 0.25,              # gojo: index & middle tips closer than this (hand-sizes) = crossed
-    "peace_gap": 0.35,               # peace: index & middle tips at least this far apart (hand-sizes)
+    "peace_gap": 0.35,               # V sign: index & middle tips at least this far apart (hand-sizes)
     "head_tilt_up": 0.10,            # dafoe: drop in nose position ratio vs calibrated baseline
     "motion": 0.07,                  # talking-to-wall: fraction of changed pixels around the face
     "hand_speed": 3.0,               # talking-to-wall: wrist speed in face-widths / second
@@ -305,11 +305,21 @@ class Detectors:
         gojo = find(lambda h, s: s["index"] and s["middle"] and not s["ring"] and crossed(h))
         d["gojo"] = Detection(gojo is not None, 1.0 if gojo else 0.0, gojo.bbox if gojo else fbox)
 
-        # Peace: two fingers clearly spread (in-between gaps are fingers on their way to crossing).
-        peace = find(lambda h, s: h is not gojo and tip_gap(h) > c["peace_gap"] and (
+        # A V sign (two fingers clearly spread) has no meme, but it is a finger sign: it mustn't read as
+        # the nerd's finger, or as a hand over the face.
+        vsign = find(lambda h, s: h is not gojo and tip_gap(h) > c["peace_gap"] and (
             two_up(s) or h.gesture == "Victory"))
-        d["peace"] = Detection(peace is not None and mid is None, 1.0 if peace else 0.0,
-                               peace.bbox if peace else None)
+
+        # Thumbs up 👍 (the dad meme): fingers curled, thumb sticking up.
+        def thumb_up(h, s):
+            if h.gesture == "Thumb_Up":
+                return True
+            if any(s.values()):
+                return False
+            t = h.pts[4, :2] - h.pts[2, :2]                    # thumb MCP -> tip
+            return -t[1] > 0.7 * np.linalg.norm(t) and np.linalg.norm(t) > 0.45 * h.size
+        thumbs = find(thumb_up)
+        d["thumbs_up"] = Detection(thumbs is not None, 1.0 if thumbs else 0.0, thumbs.bbox if thumbs else None)
 
         # Nerd ☝️🤓: index finger pointing up beside the face ("umm, actually...").
         def pointing_up(h):
@@ -322,14 +332,14 @@ class Detectors:
             x0, y0, x1, y1 = fbox
             return x0 < h.pts[8, 0] < x1 and y0 < h.pts[8, 1] < y1
 
-        point = find(lambda h, s: h is not peace and h is not gojo and pointing_up(h) and not on_face(h)
+        point = find(lambda h, s: h is not vsign and h is not gojo and h is not thumbs and pointing_up(h) and not on_face(h)
                      and (h.gesture == "Pointing_Up" or (s["index"] and not s["middle"] and not s["ring"]
                                                          and not s["pinky"])))
         d["nerd"] = Detection(point is not None and mid is None, 1.0 if point else 0.0,
                               point.bbox if point else None)
 
-        signing = [h for h in (mid, gojo, peace, point) if h is not None]
-        fists = [h for h, n in zip(hands, n_ext) if n == 0 or h.gesture == "Closed_Fist"]
+        signing = [h for h in (mid, gojo, vsign, point, thumbs) if h is not None]
+        fists = [h for h, n in zip(hands, n_ext) if (n == 0 or h.gesture == "Closed_Fist") and h is not thumbs]
         can_cover = [h for h, n in zip(hands, n_ext) if n >= 3 and all(h is not x for x in signing + fists)]
         busy = [h for h in hands if all(h is not x for x in can_cover)]
 
@@ -421,7 +431,7 @@ class Detectors:
         d["sixty_seven"] = Detection(sixty_seven, max(corr, 0.0) * min(amp / c["bounce_speed"], 2.0) / 2, box)
 
         # ---- talking to a wall: hands flying around ----
-        posed = covering > 0 or any(d[k].raw for k in ("middle_finger", "peace", "nerd", "gojo",
+        posed = covering > 0 or any(d[k].raw for k in ("middle_finger", "thumbs_up", "nerd", "gojo",
                                                         "absolute_cinema", "mahoraga",
                                                         "sixty_seven"))
         # ...while actually talking: the mouth has to be moving too.

@@ -8,7 +8,8 @@
 #             cinema             = black & white + "ABSOLUTE CINEMA" caption, plus a corner panel
 # height:     panel height as a fraction of the frame height
 # hold:       seconds the pose must be held before it fires
-# min_show:   seconds the meme stays up at minimum once fired
+# memes only show while the action is being done (a short `linger`, default 0.3 s, rides out
+#             tracking dropouts); each time it starts again the gif plays from its first frame
 
 [camera]
 index = 0
@@ -29,7 +30,7 @@ meme_on_face = true     # every meme goes on top of the face of whoever triggere
 finger_extended_ratio = 1.15
 cover_dist = 0.75       # hand this close to nose/mouth (face-widths) = covering it
 cross_dist = 0.25       # gojo: crossed fingertips this close (hand-sizes)
-peace_gap = 0.35        # peace: fingertips at least this far apart (hand-sizes)
+peace_gap = 0.35        # V sign (no meme): fingertips at least this far apart (hand-sizes)
 head_tilt_up = 0.10     # dafoe: how far back the head must tilt
 motion = 0.07           # talking to a wall: how much of the frame must be moving
 hand_speed = 3.0        # talking to a wall: wrist speed (face-widths / second)
@@ -69,7 +70,6 @@ title = "TALKING TO A WALL"
 placement = "beside"      # "face" warps it over your face instead
 height = 0.45
 hold = 0.5
-min_show = 2.5
 
 [memes.scuba_cat]         # one hand held still over mouth/nose, the other hand swimming around
 asset = "scuba_cat.gif"
@@ -83,7 +83,6 @@ asset = "absolute_cinema.gif"
 title = "ABSOLUTE CINEMA"
 placement = "cinema"
 height = 0.3
-min_show = 3.0
 
 [memes.mahoraga]          # two fists knuckle to knuckle in front of your chest (Megumi's sign)
 asset = "megumi_mahoraga.gif"
@@ -91,13 +90,12 @@ title = "WITH THIS TREASURE I SUMMON..."
 placement = "br"
 height = 0.42
 hold = 0.5
-min_show = 4.0
 
-[memes.peace]             # peace sign ✌
-asset = "piece_of_cake.gif"
-title = "PIECE OF CAKE"
+[memes.thumbs_up]         # thumbs up 👍
+asset = "thumbs_up_dad.gif"
+title = "THUMBS UP DAD"
 placement = "beside"
-height = 0.32
+height = 0.38
 
 [memes.middle_finger]     # 🖕
 asset = "thinkpad_middle_finger.png"

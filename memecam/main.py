@@ -36,7 +36,8 @@ class Meme:
         self.media = (Media(ASSETS / spec["asset"], max_side=520, key_black=spec.get("key_black", False),
                             label=self.title or name, trim=tuple(spec["frames"]) if "frames" in spec else None,
                             loop_from=spec.get("loop_from")) if load_media else None)
-        self.trigger = Trigger(hold=spec.get("hold", 0.3), min_show=spec.get("min_show", 2.0))
+        self.trigger = Trigger(hold=spec.get("hold", 0.3), min_show=spec.get("min_show", 0.0),
+                               linger=spec.get("linger", 0.3), cooldown=spec.get("cooldown", 0.0))
         self.started: float | None = None
         self.anchor = None
 
