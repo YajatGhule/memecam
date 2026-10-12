@@ -95,8 +95,10 @@ EAR_TO_FACE = 1.35          # pose ear-to-ear distance × this ≈ face-mesh wid
 POSE_FACE_MATCH = 1.5       # a pose's nose within this many face-widths of a face's nose = same person
 HAND_WRIST_MATCH = 1.2      # hand wrist within this many face-widths of a pose wrist = that person's hand
 HAND_FACE_MATCH = 3.5       # ...else within this many face-widths of a face = that person's hand
+WRIST_STRAY = 2.5          # a pose wrist this far (face-widths, sideways) from its own head is suspect
 GHOST_DIST = 2.0           # a face-less pose this close (face-widths) to another person's head is a duplicate
 ID_MAX_JUMP = 1.5           # identity: a head moves at most this many face-widths between frames
+ID_CONFIRM = 2              # identity: frames a person must be seen before a dropout of theirs claims hands
 ID_FORGET = 1.0             # seconds an unseen person keeps their id (bridges tracking dropouts only)
 
 
@@ -135,15 +137,19 @@ def hands_box(person: Frame) -> tuple[int, int, int, int] | None:
 
 
 def group_people(faces: list[Face], poses: list[np.ndarray], hands: list[Hand], width: int,
-                 max_people: int = 3, min_face_width: float = 0.08) -> list[Frame]:
+                 max_people: int = 3, min_face_width: float = 0.08,
+                 recent: list[Seen] | None = None) -> list[Frame]:
     """Group raw detections into people, largest first (no ids yet).
 
     Faces narrower than `min_face_width` × frame width are background (a classroom behind you) and
     ignored, as are small poses. Each face takes the pose whose nose is nearest (poses can lag a frame
     behind, hence the generous match radius); leftover poses are people whose face is hidden. A hand goes
     to the person with the nearest pose wrist, else to the nearest face; at most two hands per person.
-    With a single person every hand is theirs (as before multi-person support), and hands with nobody
-    around form a person of their own."""
+    `recent` (Identities.recent()) lists where everyone seen in the last moment was: someone among them
+    that isn't found now (a tracking dropout) still claims the hands near their last head / wrists, and
+    those hands are dropped rather than given to whoever is left. With a single person and nobody else
+    seen recently, every hand is theirs (as before multi-person support), and hands with nobody around
+    form a person of their own."""
     min_w = min_face_width * width
     faces = sorted((f for f in faces if f.width >= min_w), key=lambda f: -f.width)[:max_people]
     poses = [p for p in poses if pose_face_width(p) >= min_w]
@@ -170,35 +176,74 @@ def group_people(faces: list[Face], poses: list[np.ndarray], hands: list[Hand], 
         if hands:
             people = [Frame(hands=sorted(hands, key=lambda h: -h.size)[:2])]
         return people
-    if len(people) == 1:                        # one person: every hand is theirs, no matching needed
+    heads = [head_of(q) for q in people]
+    absent = _absent(heads, recent or [])
+    if len(people) == 1 and not absent:         # one person: every hand is theirs, no matching needed
         if len(hands) > 2:
-            nose = head_of(people[0])[0]
+            nose = heads[0][0]
             near = sorted(hands, key=lambda h: float(np.linalg.norm(h.pts[0, :2] - nose)))[:2]
             hands = [h for h in hands if any(h is x for x in near)]
         people[0].hands = list(hands)
         return people
 
-    heads = [head_of(q) for q in people]
-    cands = []                                  # (cost, hand index, person index)
+    # Everyone who can own a hand: the people found now, then the recently seen but missing ones.
+    slots = [(nose, fw, None if q.pose is None else q.pose[[15, 16], :2]) for q, (nose, fw) in zip(people, heads)]
+    slots += [(s.nose, s.fw, s.wrists) for s in absent]
+    alone = len(people) == 1                    # the one person found takes any hand nobody else is near
+    cands = []                                  # (cost, hand index, slot index)
     for i, h in enumerate(hands):
         w = h.pts[0, :2]
-        for k, (q, (nose, fw)) in enumerate(zip(people, heads)):
-            if q.pose is not None:
-                d = min(float(np.linalg.norm(w - q.pose[j, :2])) for j in (15, 16)) / fw
-                if d < HAND_WRIST_MATCH or len(people) == 1:
+        near = [float(np.linalg.norm(w - nose)) / fw for nose, fw, _ in slots]
+        nearest = int(np.argmin(near))
+        for k, (nose, fw, wrists) in enumerate(slots):
+            if wrists is not None:
+                d = min(float(np.linalg.norm(w - x)) for x in wrists) / fw
+                # A pose wrist on a hand far off to the side of its own head, right next to someone
+                # else's face, is a misplaced wrist (the pose model mixing up two bodies): use the faces.
+                stray = abs(w[0] - nose[0]) / fw > WRIST_STRAY and near[nearest] < 0.75 * near[k]
+                if d < HAND_WRIST_MATCH and not stray:
                     cands.append((d, i, k))
                     continue
-            d = float(np.linalg.norm(w - nose)) / fw
-            if d < HAND_FACE_MATCH or len(people) == 1:
-                cands.append((100 + d, i, k))
-    taken = set()
+            # Face fallback: only the nearest head may take the hand (a third hand of a full person is
+            # a duplicate detection, not someone else's hand).
+            if k == nearest and (near[k] < HAND_FACE_MATCH or (alone and k == 0)):
+                cands.append((100 + near[k], i, k))
+            elif alone and k == 0 and nearest >= len(people) and near[nearest] >= HAND_FACE_MATCH:
+                cands.append((100 + near[k], i, k))     # nearest is a missing person, but far from them too
+    owner: dict[int, int] = {}
+    count = [0] * len(slots)
     for _, i, k in sorted(cands):
-        if i not in taken and len(people[k].hands) < 2:
-            taken.add(i)
-            people[k].hands.append(hands[i])
-    for q in people:                            # keep MediaPipe's order within a person
-        q.hands.sort(key=lambda h: next(i for i, x in enumerate(hands) if x is h))
+        if i not in owner and count[k] < 2:
+            owner[i] = k
+            count[k] += 1
+    for i, h in enumerate(hands):               # keep MediaPipe's order within a person
+        if owner.get(i, len(people)) < len(people):   # hands of a missing person are dropped
+            people[owner[i]].hands.append(h)
     return people
+
+
+def _absent(heads: list[tuple[np.ndarray, float] | None], recent: list[Seen]) -> list[Seen]:
+    """The recently seen people (with a head) that none of the current heads continues."""
+    pairs = sorted((float(np.linalg.norm(hd[0] - s.nose)) / max(hd[1], s.fw), i, j)
+                   for i, hd in enumerate(heads) if hd is not None
+                   for j, s in enumerate(recent) if s.nose is not None)
+    used_i, used_j = set(), set()
+    for d, i, j in pairs:
+        if d < ID_MAX_JUMP and i not in used_i and j not in used_j:
+            used_i.add(i)
+            used_j.add(j)
+    return [s for j, s in enumerate(recent) if s.nose is not None and j not in used_j]
+
+
+@dataclass
+class Seen:
+    """Where a tracked person was last seen."""
+    nose: np.ndarray | None        # head position (None: hands only)
+    fw: float                      # face width
+    t: float                       # when
+    wrists: np.ndarray | None = None   # (2, 2) last pose wrists, if seen recently
+    wrists_t: float = 0.0
+    hits: int = 1                  # frames seen in a row (with gaps under `forget`)
 
 
 class Identities:
@@ -206,15 +251,26 @@ class Identities:
 
     An unseen person keeps their id for `forget` seconds (a short tracking dropout), then it is free
     again. New people take the lowest free id, and when only one person is left they become id 1
-    (`renamed` lists the renumbering of the latest assign(), old -> new)."""
+    (`renamed` lists the renumbering of the latest assign(), old -> new). Each track remembers the last
+    head position and pose wrists, so recent() can tell group_people where a missing person was."""
 
     def __init__(self, max_jump: float = ID_MAX_JUMP, forget: float = ID_FORGET):
         self.max_jump, self.forget = max_jump, forget
-        self.tracks: dict[int, tuple[np.ndarray | None, float, float]] = {}   # pid -> (nose, face width, last seen)
+        self.tracks: dict[int, Seen] = {}       # pid -> last seen
         self.renamed: dict[int, int] = {}
 
+    def recent(self, now: float) -> list[Seen]:
+        """Everyone seen within the last `forget` seconds (wrists only if those are that recent too).
+        A face seen for fewer than `ID_CONFIRM` frames (often a false detection) doesn't count."""
+        out = []
+        for s in self.tracks.values():
+            if now - s.t <= self.forget and s.hits >= ID_CONFIRM:
+                fresh = s.wrists is not None and now - s.wrists_t <= self.forget
+                out.append(Seen(s.nose, s.fw, s.t, s.wrists if fresh else None, s.wrists_t, s.hits))
+        return out
+
     def assign(self, people: list[Frame], now: float) -> None:
-        self.tracks = {k: v for k, v in self.tracks.items() if now - v[2] <= self.forget}
+        self.tracks = {k: v for k, v in self.tracks.items() if now - v.t <= self.forget}
         self.renamed = {}
         if len(self.tracks) == 1 and 1 not in self.tracks:     # alone again: back to PERSON_01
             (old, v), = self.tracks.items()
@@ -225,9 +281,9 @@ class Identities:
         for i, hd in enumerate(heads):
             if hd is None:
                 continue
-            for pid, (c, fw, _) in self.tracks.items():
-                if c is not None:
-                    d = float(np.linalg.norm(hd[0] - c)) / max(hd[1], fw)
+            for pid, s in self.tracks.items():
+                if s.nose is not None:
+                    d = float(np.linalg.norm(hd[0] - s.nose)) / max(hd[1], s.fw)
                     if d < self.max_jump:
                         pairs.append((d, i, pid))
         done: dict[int, int] = {}
@@ -237,15 +293,23 @@ class Identities:
         for i, q in enumerate(people):
             if i not in done:
                 free = [pid for pid in self.tracks if pid not in done.values()
-                        and (heads[i] is None or self.tracks[pid][0] is None)]
+                        and (heads[i] is None or self.tracks[pid].nose is None)]
                 if free:        # hands only: whoever was seen most recently; a face for a hands-only track
-                    done[i] = max(free, key=lambda pid: self.tracks[pid][2])
+                    done[i] = max(free, key=lambda pid: self.tracks[pid].t)
                 else:
                     done[i] = next(n for n in range(1, len(self.tracks) + len(people) + 2)
                                    if n not in self.tracks and n not in done.values())
             q.pid = done[i]
-            c, fw = heads[i] if heads[i] is not None else (self.tracks.get(q.pid, (None, 1.0, 0))[:2])
-            self.tracks[q.pid] = (None if c is None else np.array(c, float), fw, now)
+            prev = self.tracks.get(q.pid)
+            if heads[i] is not None:
+                nose, fw = np.array(heads[i][0], float), heads[i][1]
+            else:
+                nose, fw = (prev.nose, prev.fw) if prev is not None else (None, 1.0)
+            if q.pose is not None:
+                wrists, wrists_t = np.array(q.pose[[15, 16], :2], float), now
+            else:
+                wrists, wrists_t = (prev.wrists, prev.wrists_t) if prev is not None else (None, 0.0)
+            self.tracks[q.pid] = Seen(nose, fw, now, wrists, wrists_t, prev.hits + 1 if prev is not None else 1)
 
 
 MOTION_W, MOTION_H = 160, 90
@@ -314,7 +378,8 @@ class Tracker:
             self.last_poses = [np.array([[p.x * pw, p.y * ph, p.z * pw, p.visibility] for p in lm])
                                for lm in res.pose_landmarks]
 
-        people = group_people(faces, self.last_poses, hands, w, self.max_people, self.min_face_width)
+        people = group_people(faces, self.last_poses, hands, w, self.max_people, self.min_face_width,
+                              self.ids.recent(ts_ms / 1000))
         self.ids.assign(people, ts_ms / 1000)
         main = people[0] if people else Frame()
         out = Frame(hands=main.hands, face=main.face, pose=main.pose, width=w, height=h, pid=main.pid,

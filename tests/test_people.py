@@ -138,6 +138,82 @@ def test_face_after_hands_only_keeps_the_id():
     assert a[0].pid == 1 and b[0].pid == 1
 
 
+def _seen_together(ids, frames=3):
+    """Both people in view for a few frames (an established PERSON_02)."""
+    for k in range(frames):
+        ids.assign(group_people([face_at(LEFT), face_at(RIGHT)], [], [], W, recent=ids.recent(k / 30)), k / 30)
+    return frames / 30
+
+
+def test_hands_of_a_person_who_dropped_out_are_not_given_to_the_other():
+    """The right person's face drops out for a frame: their hand is dropped, not handed to the left person."""
+    ids = Identities(forget=1.0)
+    t = _seen_together(ids)
+    mine = make_hand(OPEN, wrist=(LEFT + 60, 520), size=90)
+    theirs = make_hand(OPEN, wrist=(RIGHT - 40, 500), size=90)     # 3 face-widths from the left face
+    people = group_people([face_at(LEFT)], [], [mine, theirs], W, recent=ids.recent(t))
+    ids.assign(people, t)
+    assert len(people) == 1 and people[0].pid == 1 and people[0].hands == [mine]
+    # Same with poses: the missing person's last wrists claim the hand too.
+    ids = Identities(forget=1.0)
+    for k in range(3):
+        ids.assign(group_people([face_at(LEFT), face_at(RIGHT)], [pose_at(LEFT), pose_at(RIGHT)], [], W,
+                                recent=ids.recent(k / 30)), k / 30)
+    on_wrist = make_hand(OPEN, wrist=(RIGHT - 150, 560), size=90)  # on the right person's last left wrist
+    people = group_people([face_at(LEFT)], [pose_at(LEFT)], [on_wrist], W, recent=ids.recent(0.1))
+    assert people[0].hands == []
+    # Once the missing person is forgotten, the one left gets every hand again (single-person path).
+    people = group_people([face_at(LEFT)], [], [mine, theirs], W, recent=ids.recent(t + 1.5))
+    assert people[0].hands == [mine, theirs]
+
+
+def test_recent_tracks_remember_head_and_wrists():
+    ids = Identities(forget=1.0)
+    for k in range(3):
+        ids.assign(group_people([face_at(LEFT)], [pose_at(LEFT)], [], W), k / 30)
+    ids.assign(group_people([face_at(LEFT + 10)], [], [], W), 0.1)    # pose missing this frame
+    (s,) = ids.recent(0.2)
+    assert s.nose[0] == LEFT + 10 and abs(s.fw - 200) < 1
+    assert s.wrists is not None and s.wrists[:, 0].tolist() == [LEFT - 150, LEFT + 150]
+    assert ids.recent(1.2) == []
+
+
+def test_one_frame_false_face_does_not_claim_hands():
+    """A face seen for a single frame (often a hand mistaken for a face) is not a missing person."""
+    ids = Identities(forget=1.0)
+    for k in range(5):
+        faces = [face_at(LEFT)] + ([face_at(RIGHT)] if k == 3 else [])
+        ids.assign(group_people(faces, [], [], W, recent=ids.recent(k / 30)), k / 30)
+    far = make_hand(OPEN, wrist=(RIGHT, 500), size=90)
+    people = group_people([face_at(LEFT)], [], [far], W, recent=ids.recent(5 / 30))
+    assert people[0].hands == [far]
+
+
+def test_stray_pose_wrist_loses_to_the_face_next_to_the_hand():
+    """The left person's pose puts a wrist on the right person's hand, far to the side of the left head."""
+    hand = make_hand(OPEN, wrist=(RIGHT - 60, 450), size=90)
+    stray = pose_at(LEFT, wr_dx=RIGHT - 60 - LEFT, wy=450)
+    people = group_people([face_at(LEFT), face_at(RIGHT)], [stray], [hand], W)
+    right = max(people, key=lambda q: q.face.pts[1, 0])
+    left = min(people, key=lambda q: q.face.pts[1, 0])
+    assert left.pose is not None and right.hands == [hand] and left.hands == []
+    # A wrist reaching sideways near its own head is still trusted.
+    reach = make_hand(OPEN, wrist=(LEFT + 300, 450), size=90)
+    people = group_people([face_at(LEFT), face_at(RIGHT)], [pose_at(LEFT, wr_dx=300, wy=450)], [reach], W)
+    assert min(people, key=lambda q: q.face.pts[1, 0]).hands == [reach]
+
+
+def test_third_hand_of_a_full_person_is_not_given_to_the_neighbour():
+    """A duplicate detection of the right person's hand doesn't overflow to the left person."""
+    h1 = make_hand(OPEN, wrist=(RIGHT - 150, 560), size=90)
+    h2 = make_hand(OPEN, wrist=(RIGHT + 150, 560), size=90)
+    dup = make_hand(OPEN, wrist=(RIGHT - 140, 540), size=90)
+    people = group_people([face_at(LEFT), face_at(RIGHT)], [pose_at(RIGHT)], [h1, dup, h2], W)
+    right = max(people, key=lambda q: q.face.pts[1, 0])
+    left = min(people, key=lambda q: q.face.pts[1, 0])
+    assert right.hands == [h1, h2] and left.hands == []
+
+
 def test_two_thumbs_up_fire_two_memes_with_their_own_anchors():
     cfg = tomllib.loads(CONFIG.read_text())
     crowd = Crowd(cfg, load_media=False)
