@@ -1,6 +1,6 @@
 """Meme Cam: webcam + mocap markers + gesture-triggered memes.
 
-Keys: d = toggle markers/bounding boxes, f = toggle meme overlays, i = gesture debug scores, r = record,
+Keys: d = toggle markers/bounding boxes, f = toggle meme overlays, m = mute meme sounds, i = gesture debug scores, r = record,
       c = recalibrate head pose, q / Esc = quit
 """
 from __future__ import annotations
@@ -461,6 +461,7 @@ def main(overlay: Path | None = None, title: str = "Meme Cam"):
                          "tracking), like a webcam; loops the clip")
     ap.add_argument("--bench", type=float, metavar="SECONDS",
                     help="headless: run the live path this long, print display FPS vs tracking FPS, exit")
+    ap.add_argument("--mute", action="store_true", help="start with the meme sounds muted (toggle: m)")
     ap.add_argument("--verbose", action="store_true", help="show MediaPipe/OpenCV/Qt log output")
     args = ap.parse_args()
     if not args.verbose:
@@ -536,6 +537,11 @@ def main(overlay: Path | None = None, title: str = "Meme Cam"):
         print(f"[memecam] {n} frames, {fps:.1f} FPS, face={fr.face is not None} hands={len(fr.hands)} "
               f"pose={fr.pose is not None} people={[q.pid for q in fr.people]} active={active} -> {args.snapshot}")
 
+    sounds = None
+    if not headless:          # meme sounds only in the window (not for --snapshot / --bench)
+        from memecam.audio import Sounds
+        sounds = Sounds(cfg, ASSETS)
+        sounds.muted = args.mute
     if not headless:
         # GUI_NORMAL: no Qt toolbar (its save/zoom buttons opened dialogs that spammed the terminal)
         cv2.namedWindow(title, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
@@ -573,13 +579,16 @@ def main(overlay: Path | None = None, title: str = "Meme Cam"):
             d0 = time.perf_counter()
             # [f] hides the meme overlays (detection keeps running, markers stay as toggled by [d])
             active = compose(frame, fr, shown if show_memes else [], now, cinema_fx, show_markers, on_face)
+            if sounds is not None:
+                sounds.update(active)
 
             t = time.perf_counter()
             fps = 0.9 * fps + 0.1 / max(t - last, 1e-3)
             last = t
             if show_debug:
                 debug_panel(frame, dets.get(fr.pid, {}), memes)
-            mocap.hud(frame, fps, active, writer is not None, show_markers, det_fps if live else None, show_memes)
+            mocap.hud(frame, fps, active, writer is not None, show_markers, det_fps if live else None, show_memes,
+                      sound=None if sounds is None or not sounds.ok else not sounds.muted)
             draw_time += time.perf_counter() - d0
 
             if writer is not None:
@@ -611,6 +620,8 @@ def main(overlay: Path | None = None, title: str = "Meme Cam"):
                 show_memes = not show_memes
             elif key == ord("d"):
                 show_markers = not show_markers
+            elif key == ord("m") and sounds is not None:
+                sounds.toggle_mute()
             elif key == ord("i"):
                 show_debug = not show_debug
             elif key == ord("c"):
@@ -641,6 +652,8 @@ def main(overlay: Path | None = None, title: str = "Meme Cam"):
             writer.release()
         if vcam is not None:
             vcam.close()
+        if sounds is not None:
+            sounds.close()
         cv2.destroyAllWindows()
 
 

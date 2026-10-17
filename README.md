@@ -43,6 +43,14 @@ in `memecam/config.toml`; if the GPU fails to start it falls back to the CPU.
 Virtual webcam needs v4l2loopback once:
 `sudo pacman -S v4l2loopback-dkms && sudo modprobe v4l2loopback exclusive_caps=1 card_label="Meme Cam"`
 
+## Meme sounds
+
+Each meme's sound plays while the meme is on screen (from the start each time it switches on, a quick fade
+when it switches off); `m` mutes, `--mute` starts muted, `[audio]` in the config sets the volume. The sounds
+are `assets/sounds/<meme>.wav` (git-ignored: they are copyrighted clips); `tools/fetch_sounds.sh` downloads the
+default set with yt-dlp + ffmpeg. Use your own by dropping a WAV there or setting `sound = "file.wav"` in a
+`[memes.*]` table.
+
 ## Keys
 
 | key | action |
@@ -50,6 +58,7 @@ Virtual webcam needs v4l2loopback once:
 | `d` | toggle tracking markers + bounding boxes |
 | `f` | toggle the meme overlays (detection keeps running) |
 | `q` / `Esc` | quit |
+| `m` | mute / unmute the meme sounds |
 | `i` | gesture debug scores |
 | `r` | start/stop recording to `~/Videos/memecam-*.mp4` |
 | `c` | recalibrate neutral head pose |

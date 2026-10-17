@@ -137,7 +137,7 @@ def draw(img: np.ndarray, fr: Frame) -> None:
 
 
 def hud(img: np.ndarray, fps: float, active: list[str], recording: bool, show_markers: bool,
-        track_fps: float | None = None, show_memes: bool = True) -> None:
+        track_fps: float | None = None, show_memes: bool = True, sound: bool | None = None) -> None:
     h, w = img.shape[:2]
     blink = int(time.time() * 2) % 2 == 0
     if recording and blink:
@@ -148,6 +148,7 @@ def hud(img: np.ndarray, fps: float, active: list[str], recording: bool, show_ma
     if active:
         cv2.putText(img, ">> " + "  ".join(a.upper() for a in active), (36, 56), FONT, 0.55,
                     (80, 220, 255), 1, cv2.LINE_AA)
-    hint = (f"[d] markers {'on' if show_markers else 'off'}  [f] memes {'on' if show_memes else 'off'}  "
+    snd = "" if sound is None else f"[m] sound {'on' if sound else 'off'}  "
+    hint = (f"[d] markers {'on' if show_markers else 'off'}  [f] memes {'on' if show_memes else 'off'}  {snd}"
             "[i] debug  [r] rec  [c] calibrate  [q] quit")
     cv2.putText(img, hint, (12, h - 12), FONT, 0.42, (200, 200, 200), 1, cv2.LINE_AA)

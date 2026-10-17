@@ -51,6 +51,16 @@ say "downloading the MediaPipe models"
 "$UV" run --project "$DIR" --no-dev python -c \
     "from memecam.tracking import MODELS, model_path; [model_path(m) for m in MODELS]"
 
+# ---- meme sounds (copyrighted clips, so not in the repo: downloaded with yt-dlp + ffmpeg) ----
+if [ -z "$(ls "$DIR/assets/sounds/"*.wav 2>/dev/null)" ]; then
+    if command -v yt-dlp >/dev/null && command -v ffmpeg >/dev/null; then
+        say "downloading the meme sounds"
+        "$DIR/tools/fetch_sounds.sh" >/dev/null || warn "some meme sounds failed to download (re-run tools/fetch_sounds.sh)"
+    else
+        warn "no yt-dlp / ffmpeg: memes stay silent. Install both, then run $DIR/tools/fetch_sounds.sh"
+    fi
+fi
+
 # ---- 4. launchers ------------------------------------------------------------------------------------
 mkdir -p "$BIN"
 for exe in memecam memecamv2; do

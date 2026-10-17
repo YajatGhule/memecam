@@ -29,6 +29,10 @@ forget = 1.0            # seconds a person who drops out keeps their id (trackin
 meme_on_face = true     # every meme goes on top of the face of whoever triggered it (overrides placement;
                         # absolute cinema still turns the frame black & white). false = use each placement
 
+[audio]                 # each meme's sound plays while the meme is on ([m] mutes). Sounds: assets/sounds/<meme>.wav
+enabled = true          # (tools/fetch_sounds.sh downloads them) or `sound = "file.wav"` in a [memes.*] table
+volume = 0.8
+
 [thresholds]
 finger_extended_ratio = 1.15
 cover_dist = 0.75       # hand this close to nose/mouth (face-widths) = covering it
