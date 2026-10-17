@@ -1,6 +1,16 @@
 # Meme Cam on Windows
 
-## Install
+## Quick install
+
+In PowerShell (no admin rights needed; installs uv + Python 3.12, the app and Start-menu shortcuts):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/YajatGhule/memecam/main/install.ps1 | iex"
+```
+
+Then start **Meme Cam** from the Start menu, or run `memecam` in a new terminal. Re-run it to update.
+
+## Manual install
 
 1. Install [Git for Windows](https://git-scm.com/download/win) and [uv](https://docs.astral.sh/uv/getting-started/installation/). With `winget`, uv can also be installed from PowerShell:
 

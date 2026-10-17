@@ -6,7 +6,26 @@ Built on MediaPipe Tasks (hands + gestures, face mesh + blendshapes, body pose) 
 the approach of projects like [SAT0RU](https://github.com/reinesana/SAT0RU) (finger-state hand signs) and
 [Superhero_Mask_Overlay](https://github.com/kranok-dev/Superhero_Mask_Overlay) (homography face overlays).
 
-## Run
+## Install
+
+One line, no admin rights needed (installs [uv](https://docs.astral.sh/uv), which brings its own Python 3.12):
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/YajatGhule/memecam/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/YajatGhule/memecam/main/install.ps1 | iex"
+```
+
+Then run `memecam` (or `memecamv2`), or start Meme Cam from your app menu / Start menu. Re-run the same line to
+update. The app is installed to `~/.local/share/memecam` (Windows: `%LOCALAPPDATA%\memecam`). Manual install
+for Windows: [WINDOWS.md](WINDOWS.md). Prefer C++? There is a faster single-person port:
+[memecam-cpp](https://github.com/YajatGhule/memecam-cpp).
+
+## Run (from a checkout)
 
 ```sh
 cd ~/Projects/meme-cam
