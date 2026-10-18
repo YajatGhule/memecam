@@ -100,7 +100,8 @@ jobs:
         shell: bash
         working-directory: cpp
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOpenCV_DIR="C:/opencv/opencv/build"
+          # Newest Visual Studio on the runner; OpenCV's prebuilt vc16 libs work with any newer MSVC.
+          cmake -S . -B build -A x64 -DOpenCV_DIR="C:/opencv/opencv/build/x64/vc16/lib"
           cmake --build build --config Release --target memecam memecamv2 --parallel
       - name: Package
         shell: bash
