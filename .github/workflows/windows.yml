@@ -1,6 +1,7 @@
 # Windows builds of both versions: the Python app (PyInstaller) and the C++ port (YajatGhule/memecam-cpp,
 # MSVC + LiteRT + prebuilt OpenCV). Run it from the Actions tab ("Run workflow") to get the zips as build
-# artifacts; push a tag like v1.0 to also publish them as a GitHub Release.
+# artifacts; push a tag like v1.0 to also publish them as a GitHub Release (each zip is added as soon as
+# its build finishes).
 name: Windows builds
 
 on:
@@ -56,6 +57,14 @@ jobs:
         run: Compress-Archive -Path dist/memecam -DestinationPath MemeCam-Python-Windows.zip
       - uses: actions/upload-artifact@v4
         with: { name: MemeCam-Python-Windows, path: MemeCam-Python-Windows.zip }
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --title "Meme Cam $GITHUB_REF_NAME" --notes "Windows builds: unzip, then double-click memecam.exe (or memecamv2.exe for the Godfather / looksmaxxing memes). MemeCam-Python = the original app; MemeCam-cpp = the faster single-person C++ port. No install needed. Linux / macOS: see the README for the one-line installers." || true
+          gh release upload "$GITHUB_REF_NAME" MemeCam-Python-Windows.zip --clobber
 
   cpp:
     needs: sounds
@@ -120,15 +129,11 @@ jobs:
         run: Compress-Archive -Path MemeCam-cpp -DestinationPath MemeCam-cpp-Windows.zip
       - uses: actions/upload-artifact@v4
         with: { name: MemeCam-cpp-Windows, path: MemeCam-cpp-Windows.zip }
-
-  release:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !cancelled() }}
-    needs: [python, cpp]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { pattern: MemeCam-*, merge-multiple: true }
-      - env: { GH_TOKEN: "${{ github.token }}" }
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          gh release create "$GITHUB_REF_NAME" MemeCam-*.zip --repo "$GITHUB_REPOSITORY" --title "Meme Cam $GITHUB_REF_NAME" \
-            --notes "Windows builds. Unzip, then double-click memecam.exe (or memecamv2.exe). MemeCam-Python = the original app; MemeCam-cpp = the faster single-person C++ port."
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --title "Meme Cam $GITHUB_REF_NAME" --notes "Windows builds: unzip, then double-click memecam.exe (or memecamv2.exe for the Godfather / looksmaxxing memes). MemeCam-Python = the original app; MemeCam-cpp = the faster single-person C++ port. No install needed. Linux / macOS: see the README for the one-line installers." || true
+          gh release upload "$GITHUB_REF_NAME" MemeCam-cpp-Windows.zip --clobber

@@ -15,6 +15,10 @@ One line, no admin rights needed (installs [uv](https://docs.astral.sh/uv), whic
 curl -fsSL https://raw.githubusercontent.com/YajatGhule/memecam/main/install.sh | bash
 ```
 
+**Windows, no install:** download `MemeCam-Python-Windows.zip` (or the faster C++ build,
+`MemeCam-cpp-Windows.zip`) from [Releases](https://github.com/YajatGhule/memecam/releases/latest), unzip, and
+double-click `memecam.exe`. Or install with PowerShell:
+
 ```powershell
 # Windows (PowerShell)
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/YajatGhule/memecam/main/install.ps1 | iex"
