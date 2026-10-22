@@ -121,7 +121,7 @@ checking the rights.
 
 `cpp/android/` is a sideloadable APK of this version: the same C++ tracker, gestures, memes and sounds, with
 a CameraX camera and on-screen buttons (markers, memes, sound, v2 memes, flip camera, recalibrate, photo to
-`Pictures/MemeCam`). Build it (arm64; Android SDK + NDK 27, JDK 17+, the OpenCV Android SDK, and a host
+`Pictures/MemeCam`, video recording with the microphone to `Movies/MemeCam`). Build it (arm64; Android SDK + NDK 27, JDK 17+, the OpenCV Android SDK, and a host
 `flatc` from a desktop build in `build/flatbuffers-flatc`):
 
 ```sh

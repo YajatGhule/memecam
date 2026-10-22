@@ -37,6 +37,8 @@ class MainActivity : AppCompatActivity() {
     private val bitmaps = arrayOfNulls<Bitmap>(2)
     private var flip = 0
     @Volatile private var lastShown: Bitmap? = null
+    @Volatile private var recorder: Recorder? = null
+    private lateinit var recButton: Button
     @Volatile private var ready = false
     private var front = true
     private var markers = true
@@ -85,6 +87,7 @@ class MainActivity : AppCompatActivity() {
             button("Flip camera") { front = !front; prefs.edit().putBoolean("front", front).apply(); bindCamera() },
             button("Recalibrate") { Native.calibrate(); Toast.makeText(this, "Look straight ahead", Toast.LENGTH_SHORT).show() },
             button("Photo") { savePhoto() },
+            button("Record") { toggleRecording() }.also { recButton = it },
         )
         buttons = b
         val bar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(12)) }
@@ -146,6 +149,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, perms, results)
+        if (code == 2) { toggleRecording(); return }
         if (results.firstOrNull() == PackageManager.PERMISSION_GRANTED) bindCamera()
         else status.text = "Meme Cam needs the camera.\nAllow it in Settings > Apps > Meme Cam."
     }
@@ -173,6 +177,7 @@ class MainActivity : AppCompatActivity() {
                         val p = proxy.planes[0]
                         Native.process(p.buffer, proxy.width, proxy.height, p.rowStride, rot, mirror, bm)
                         lastShown = bm
+                        recorder?.frame(bm)
                         image.post { image.setImageBitmap(bm) }
                     }
                 } finally { proxy.close() }
@@ -180,6 +185,32 @@ class MainActivity : AppCompatActivity() {
             provider.unbindAll()
             provider.bindToLifecycle(this, if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA, use)
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    // ---- recording ----
+    private fun toggleRecording() {
+        recorder?.let { r ->
+            recorder = null
+            recButton.text = "Record"
+            Thread {
+                val ok = r.stop()
+                runOnUiThread { Toast.makeText(this, if (ok) "Saved to Movies/MemeCam" else "Recording failed", Toast.LENGTH_SHORT).show() }
+            }.start()
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED && !prefs.getBoolean("asked_mic", false)) {
+            prefs.edit().putBoolean("asked_mic", true).apply()
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 2)   // the answer starts the recording
+            return
+        }
+        val bm = lastShown ?: return
+        val mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        try {
+            recorder = Recorder(this, bm.width, bm.height, mic)
+            recButton.text = "Stop ●"
+        } catch (e: Exception) {
+            Toast.makeText(this, "Can't record: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     // ---- photo ----
@@ -194,6 +225,11 @@ class MainActivity : AppCompatActivity() {
         if (uri == null) { Toast.makeText(this, "Could not save", Toast.LENGTH_SHORT).show(); return }
         contentResolver.openOutputStream(uri)?.use { bm.compress(Bitmap.CompressFormat.JPEG, 92, it) }
         Toast.makeText(this, "Saved to Pictures/MemeCam", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (recorder != null) toggleRecording()   // don't leave a recording running in the background
     }
 
     override fun onDestroy() {
