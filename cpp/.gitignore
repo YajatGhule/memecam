@@ -1,0 +1,8 @@
+build/
+third_party/
+models/*.tflite
+models/*.task
+build*/
+tests/fixtures/replays.bin
+tests/fixtures/expected.json
+assets/sounds/

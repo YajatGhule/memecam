@@ -1,4 +1,4 @@
-# Windows build of the app (PyInstaller; the C++ port has its own in YajatGhule/memecam-cpp). Run it from the
+# Windows builds of both versions: Python (PyInstaller) and C++ (MSVC + LiteRT). Run it from the
 # Actions tab ("Run workflow") to get the zip as a build artifact; push a tag like v1.0 to also publish it as
 # a GitHub Release.
 name: Windows builds
@@ -30,8 +30,18 @@ jobs:
           path: assets/sounds/*.wav
           if-no-files-found: ignore
 
+  release:
+    # Created first (as a pre-release: everything is alpha) so the two builds only have to upload to it.
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    env: { GH_TOKEN: "${{ github.token }}" }
+    steps:
+      - run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Meme Cam $GITHUB_REF_NAME (alpha)" --notes "Alpha release. Windows, no install: unzip and double-click memecam.exe (or memecamv2.exe for the Godfather / looksmaxxing memes). MemeCam-cpp-Windows.zip is the faster single-person C++ build, MemeCam-Python-Windows.zip the original multi-person one. Linux / macOS: see the README for the one-line installers."
+
   python:
-    needs: sounds
+    needs: [sounds, release]
     if: ${{ !cancelled() }}
     runs-on: windows-latest
     steps:
@@ -60,7 +70,70 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release upload "$GITHUB_REF_NAME" MemeCam-Python-Windows.zip --repo "$GITHUB_REPOSITORY" --clobber
+
+  cpp:
+    needs: [sounds, release]
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 240
+    env:
+      OPENCV_VERSION: 4.12.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: sounds, path: assets/sounds }
+      - name: OpenCV (prebuilt)
+        shell: bash
         run: |
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Meme Cam $GITHUB_REF_NAME" --notes "Windows builds: unzip, then double-click memecam.exe (or memecamv2.exe for the Godfather / looksmaxxing memes). The faster single-person C++ port has its own releases: https://github.com/YajatGhule/memecam-cpp/releases. No install needed. Linux / macOS: see the README for the one-line installers." || true
-          gh release upload "$GITHUB_REF_NAME" MemeCam-Python-Windows.zip --repo "$GITHUB_REPOSITORY" --clobber
+          curl -fsSL -o opencv.exe "https://github.com/opencv/opencv/releases/download/$OPENCV_VERSION/opencv-$OPENCV_VERSION-windows.exe"
+          ./opencv.exe -o"C:\\opencv" -y > /dev/null
+          ls /c/opencv/opencv/build/x64
+      - name: LiteRT sources + models
+        shell: bash
+        run: |
+          cpp/tools/build_litert.sh
+          python - <<'EOF'
+          import io, urllib.request, zipfile, pathlib
+          base = "https://storage.googleapis.com/mediapipe-models"
+          urls = [f"{base}/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task",
+                  f"{base}/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+                  f"{base}/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"]
+          out = pathlib.Path("cpp/models"); out.mkdir(exist_ok=True)
+          def unpack(data):
+              with zipfile.ZipFile(io.BytesIO(data)) as z:
+                  for n in z.namelist():
+                      if n.endswith(".tflite"): (out / pathlib.Path(n).name).write_bytes(z.read(n))
+                      elif n.endswith(".task"): unpack(z.read(n))
+          for u in urls: unpack(urllib.request.urlopen(u).read())
+          print(sorted(p.name for p in out.iterdir()))
+          EOF
+      - name: Build
+        shell: bash
+        run: |
+          # Newest Visual Studio on the runner; OpenCV's prebuilt vc16 libs work with any newer MSVC.
+          cmake -S cpp -B build -A x64 -DOpenCV_DIR="C:/opencv/opencv/build/x64/vc16/lib"
+          cmake --build build --config Release --target memecam memecamv2 --parallel
+      - name: Package
+        shell: bash
+        run: |
+          d=MemeCam-cpp
+          mkdir -p $d
+          cp build/Release/memecam.exe build/Release/memecamv2.exe $d/
+          cp /c/opencv/opencv/build/x64/vc16/bin/opencv_world*.dll $d/
+          cp /c/opencv/opencv/build/x64/vc16/bin/opencv_videoio_ffmpeg*.dll $d/ || true
+          rm -f $d/opencv_world*d.dll
+          cp -r cpp/config assets cpp/models $d/
+          cp README.md $d/
+          $d/memecam.exe --help
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path MemeCam-cpp -DestinationPath MemeCam-cpp-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: MemeCam-cpp-Windows, path: MemeCam-cpp-Windows.zip }
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release upload "$GITHUB_REF_NAME" MemeCam-cpp-Windows.zip --repo "$GITHUB_REPOSITORY" --clobber

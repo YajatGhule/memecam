@@ -6,3 +6,7 @@ models/*.task
 assets/sounds/
 build/
 dist/
+cpp/build/
+cpp/build*/
+cpp/third_party/
+cpp/models/

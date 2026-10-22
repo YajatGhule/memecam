@@ -1,36 +1,49 @@
 # Meme Cam
 
-Webcam with motion-capture style tracking markers that throws memes at you when you pull the right pose.
+> **Alpha.** Everything here is early software: expect rough edges, and settings and options may change.
 
-Built on MediaPipe Tasks (hands + gestures, face mesh + blendshapes, body pose) and OpenCV, following
-the approach of projects like [SAT0RU](https://github.com/reinesana/SAT0RU) (finger-state hand signs) and
+Webcam with motion-capture style tracking markers that throws memes at you when you pull the right pose.
+Built on MediaPipe hand / face / body models and OpenCV, following the approach of projects like
+[SAT0RU](https://github.com/reinesana/SAT0RU) (finger-state hand signs) and
 [Superhero_Mask_Overlay](https://github.com/kranok-dev/Superhero_Mask_Overlay) (homography face overlays).
+
+One repo, two versions with the same gestures and memes:
+
+| | Python (`memecam/`) | C++ (`cpp/`) |
+|---|---|---|
+| people | up to 3 at once | one (whoever is closest), much faster |
+| platforms | Linux, macOS, Windows | Linux, Windows |
+| install | one-line script | one-line script (compiles, ~30 min first time) or Windows zip |
+| commands | `memecam`, `memecamv2` | `memecam-cpp`, `memecamv2-cpp` |
+
+`memecamv2` / `memecamv2-cpp` add the Godfather and looksmaxxing memes. Build details for the C++ version:
+[cpp/README.md](cpp/README.md).
 
 ## Install
 
-One line, no admin rights needed (installs [uv](https://docs.astral.sh/uv), which brings its own Python 3.12):
+**Windows, no install:** download the zip from [Releases](https://github.com/YajatGhule/memecam/releases)
+(`MemeCam-Python-Windows.zip` or the faster `MemeCam-cpp-Windows.zip`), unzip, double-click `memecam.exe`
+(`memecamv2.exe` for v2). If Windows says "protected your PC": **More info** > **Run anyway**.
+Other Windows options (PowerShell installer, manual): [WINDOWS.md](WINDOWS.md).
+
+**Linux / macOS, Python version** (no admin rights; installs [uv](https://docs.astral.sh/uv) with its own Python 3.12):
 
 ```sh
-# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/YajatGhule/memecam/main/install.sh | bash
 ```
 
-**Windows, no install:** download `MemeCam-Python-Windows.zip` from
-[Releases](https://github.com/YajatGhule/memecam/releases/latest), unzip, and double-click `memecam.exe`
-(the faster C++ build is in [memecam-cpp's releases](https://github.com/YajatGhule/memecam-cpp/releases/latest)).
-Or install with PowerShell:
+**Linux, C++ version** (installs build tools + OpenCV with your package manager, asks for sudo):
 
-```powershell
-# Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/YajatGhule/memecam/main/install.ps1 | iex"
+```sh
+curl -fsSL https://raw.githubusercontent.com/YajatGhule/memecam/main/cpp/install.sh | bash
 ```
 
-Then run `memecam` (or `memecamv2`), or start Meme Cam from your app menu / Start menu. Re-run the same line to
-update. The app is installed to `~/.local/share/memecam` (Windows: `%LOCALAPPDATA%\memecam`). Manual install
-for Windows: [WINDOWS.md](WINDOWS.md). Prefer C++? There is a faster single-person port:
-[memecam-cpp](https://github.com/YajatGhule/memecam-cpp).
+Re-run the same line to update. The Python app goes to `~/.local/share/memecam`, the C++ one to
+`~/.local/share/memecam-cpp` (Windows installer: `%LOCALAPPDATA%\memecam`).
 
 ## Run (from a checkout)
+
+The C++ version is built from `cpp/`, see [cpp/README.md](cpp/README.md).
 
 ```sh
 cd ~/Projects/meme-cam
@@ -96,7 +109,7 @@ By default every meme is drawn on top of the face of whoever triggered it, follo
 frame black & white with its caption. Set `[display] meme_on_face = false` in `memecam/config.toml` to use
 each meme's own `placement` instead (corner panel, beside your hand, warped onto the face, ...).
 
-## Several people
+## Several people (Python version)
 
 Up to `[people] max_people` people (default 3) are tracked at once. Each person gets a persistent id
 (`PERSON_01`, `PERSON_02`, ... with their own marker colors) and their own gesture detectors and meme

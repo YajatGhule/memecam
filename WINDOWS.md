@@ -1,5 +1,7 @@
 # Meme Cam on Windows
 
+> Alpha. Easiest: the no-install zips on the [Releases](https://github.com/YajatGhule/memecam/releases) page. The options below are for the Python version.
+
 ## Quick install
 
 In PowerShell (no admin rights needed; installs uv + Python 3.12, the app and Start-menu shortcuts):
