@@ -14,7 +14,16 @@ if(MSVC)
   add_compile_options(/utf-8 /Zc:__cplusplus /MP)
 endif()
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui)
+if(ANDROID)   # the APK: OpenCV Android SDK (core imgproc imgcodecs videoio, no window), no desktop app / tests / tools
+  # Not find_package(OpenCV): its config imports a target called libprotobuf, which clashes with LiteRT's own.
+  # The SDK's single shared library (libopencv_java4.so, all modules) and its headers are all that is needed.
+  get_filename_component(_ocv_native "${OpenCV_DIR}/.." ABSOLUTE)
+  set(OpenCV_INCLUDE_DIRS ${_ocv_native}/jni/include)
+  set(OpenCV_LIBS ${_ocv_native}/libs/${ANDROID_ABI}/libopencv_java4.so)
+  include_directories(${OpenCV_INCLUDE_DIRS})
+else()
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui)
+endif()
 find_package(Threads REQUIRED)
 include(cmake/deps.cmake)
 
@@ -38,8 +47,10 @@ if(TARGET opencv_freetype)
   target_compile_definitions(memecam_core PUBLIC MEMECAM_HAVE_FREETYPE=1)
 endif()
 # Dev tool: C++ rendering of a frame dumped by tools/dump_frame.py, compared with the Python rendering.
-add_executable(render_check tools/render_check.cpp)
-target_link_libraries(render_check PRIVATE memecam_core nlohmann_json::nlohmann_json)
+if(NOT ANDROID)
+  add_executable(render_check tools/render_check.cpp)
+  target_link_libraries(render_check PRIVATE memecam_core nlohmann_json::nlohmann_json)
+endif()
 
 # Vision: MediaPipe-equivalent pipelines on LiteRT (TensorFlow Lite C++).
 option(MEMECAM_WITH_VISION "Build the LiteRT vision pipelines and the app" ON)
@@ -76,9 +87,17 @@ if(MEMECAM_WITH_VISION)
     add_library(memecam_vision STATIC ${VISION_SOURCES})
     target_include_directories(memecam_vision PUBLIC src)
     target_link_libraries(memecam_vision PUBLIC memecam_core tensorflow-lite)
-    # Parity/benchmark tool: runs the Tracker on a clip against tools/dump_mediapipe.py output.
-    add_executable(vision_parity src/vision/parity_main.cpp)
-    target_link_libraries(vision_parity PRIVATE memecam_vision nlohmann_json::nlohmann_json)
+    if(NOT ANDROID)
+      # Parity/benchmark tool: runs the Tracker on a clip against tools/dump_mediapipe.py output.
+      add_executable(vision_parity src/vision/parity_main.cpp)
+      target_link_libraries(vision_parity PRIVATE memecam_vision nlohmann_json::nlohmann_json)
+    endif()
+  endif()
+
+  if(ANDROID)   # JNI library of the Android app (android/)
+    add_library(memecam_android SHARED android/engine.cpp)
+    target_link_libraries(memecam_android PRIVATE memecam_vision jnigraphics log android)
+    return()
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/src/app.cpp AND VISION_SOURCES)

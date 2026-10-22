@@ -36,8 +36,11 @@ fs::path exe_dir() {
 
 // Where config/, assets/ and models/ live: next to the executable in a packaged build (a release zip),
 // else the source tree the binary was built from.
+std::string g_root_override;   // set_project_root(): the Android app unpacks config/ assets/ models/ into its files dir
+
 const fs::path& root() {
     static const fs::path r = [] {
+        if (!g_root_override.empty()) return fs::path(g_root_override);
         fs::path d = exe_dir();
         std::error_code ec;
         if (!d.empty() && fs::exists(d / "config" / "config.toml", ec)) return d;
@@ -46,6 +49,8 @@ const fs::path& root() {
     return r;
 }
 }  // namespace
+
+void set_project_root(const std::string& dir) { g_root_override = dir; }
 
 std::string project_path(const std::string& rel) {
     fs::path p(rel);

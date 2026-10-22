@@ -160,7 +160,7 @@ void draw_markers(cv::Mat& img, const Frame& q) {
 }
 
 void hud(cv::Mat& img, double fps, const std::vector<std::string>& active, bool recording, bool show_markers,
-         std::optional<double> track_fps, bool show_memes, std::optional<bool> sound) {
+         std::optional<double> track_fps, bool show_memes, std::optional<bool> sound, bool key_hints) {
     int h = img.rows;
     double secs = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
     bool blink = long(secs * 2) % 2 == 0;
@@ -182,6 +182,7 @@ void hud(cv::Mat& img, double fps, const std::vector<std::string>& active, bool 
         }
         cv::putText(img, s, {36, 56}, FONT, 0.55, ACCENT_COL, 1, cv::LINE_AA);
     }
+    if (!key_hints) return;
     std::string hint = std::string("[d] markers ") + (show_markers ? "on" : "off") + "  [f] memes " +
                        (show_memes ? "on" : "off") + "  ";
     if (sound) hint += std::string("[m] sound ") + (*sound ? "on" : "off") + "  ";

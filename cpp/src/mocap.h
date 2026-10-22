@@ -26,6 +26,7 @@ void draw_markers(cv::Mat& img, const Frame& fr);
 // FPS line (+ tracking FPS), active memes, REC dot, key hints.
 void hud(cv::Mat& img, double fps, const std::vector<std::string>& active, bool recording, bool show_markers,
          std::optional<double> track_fps = std::nullopt, bool show_memes = true,
-         std::optional<bool> sound = std::nullopt);   // sound: on / off ([m]); nullopt = no sounds at all
+         std::optional<bool> sound = std::nullopt,   // sound: on / off ([m]); nullopt = no sounds at all
+         bool key_hints = true);                      // the bottom line of key hints (off in the Android app: it has buttons)
 
 }  // namespace memecam

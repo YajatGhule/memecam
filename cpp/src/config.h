@@ -51,6 +51,7 @@ struct Config {
 // Throws std::runtime_error on a missing file or a TOML syntax error.
 Config load_config(const std::string& base, const std::string& overlay = "");
 
+void set_project_root(const std::string& dir);   // before the first project_path() call: use dir instead of the exe / source tree
 std::string project_path(const std::string& rel);   // MEMECAM_ROOT / rel (absolute paths unchanged)
 
 }  // namespace memecam

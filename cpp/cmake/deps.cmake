@@ -7,5 +7,9 @@ FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download
 # miniaudio: single-header audio playback (meme sounds); header only, its own CMake project is not used.
 FetchContent_Declare(miniaudio GIT_REPOSITORY https://github.com/mackron/miniaudio.git GIT_TAG 0.11.22
                      GIT_SHALLOW ON SOURCE_SUBDIR do-not-add)
-FetchContent_MakeAvailable(tomlplusplus cli11 Catch2 json miniaudio)
-list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+if(ANDROID)
+  FetchContent_MakeAvailable(tomlplusplus miniaudio)
+else()
+  FetchContent_MakeAvailable(tomlplusplus cli11 Catch2 json miniaudio)
+  list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+endif()

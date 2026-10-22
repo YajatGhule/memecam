@@ -116,3 +116,23 @@ See the [main README](../README.md#meme-sounds); `../tools/fetch_sounds.sh` down
 The GIFs and images in `assets/` are copyrighted by their respective owners (films, anime, memes). They are
 included for personal use only; do not redistribute them or publish them in a public repository without
 checking the rights.
+
+## Android (alpha)
+
+`cpp/android/` is a sideloadable APK of this version: the same C++ tracker, gestures, memes and sounds, with
+a CameraX camera and on-screen buttons (markers, memes, sound, v2 memes, flip camera, recalibrate, photo to
+`Pictures/MemeCam`). Build it (arm64; Android SDK + NDK 27, JDK 17+, the OpenCV Android SDK, and a host
+`flatc` from a desktop build in `build/flatbuffers-flatc`):
+
+```sh
+cd cpp/android
+cat > local.properties <<EOF
+sdk.dir=$HOME/Android/Sdk
+opencv.dir=$HOME/Android/opencv/OpenCV-android-sdk/sdk/native
+tflite.host.tools=$PWD/../build/flatbuffers-flatc
+EOF
+PATH=$HOME/Android/Sdk/cmake/3.31.6/bin:$PATH ./gradlew :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+Meme sounds are bundled only when `assets/sounds/` exists locally (`tools/fetch_sounds.sh`).
