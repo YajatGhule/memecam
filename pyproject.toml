@@ -26,3 +26,6 @@ packages = ["memecam"]
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]   # not cpp/third_party (LiteRT sources)

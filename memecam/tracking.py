@@ -11,6 +11,7 @@ Landmarks are converted to pixel-space numpy arrays so the rest of the app never
 from __future__ import annotations
 
 import os
+import sys
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -323,19 +324,69 @@ def motion_gray(rgb: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), (5, 5), 0)
 
 
-def discrete_gpu() -> str | None:
-    """'nvidia' / 'amd' if a dedicated GPU is present (Linux sysfs or Windows/macOS: nvidia-smi only)."""
+GPU_VENDORS = {"10de": "nvidia", "1002": "amd", "8086": "intel"}
+
+
+def windows_gpus() -> list[tuple[str, str]]:
+    """(vendor, name) of the display adapters in the Windows registry, e.g. ("amd", "AMD Radeon(TM) Graphics").
+    Reads the same keys Device Manager shows, so integrated Radeon / Vega graphics are listed too."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    out = []
+    cls = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try:
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, cls)
+    except OSError:
+        return []
+    with root:
+        for i in range(64):
+            try:
+                sub = winreg.EnumKey(root, i)
+            except OSError:
+                break
+            try:
+                with winreg.OpenKey(root, sub) as k:
+                    name = str(winreg.QueryValueEx(k, "DriverDesc")[0])
+                    dev = str(winreg.QueryValueEx(k, "MatchingDeviceId")[0]).lower()
+            except OSError:
+                continue
+            ven = dev.split("ven_")[1][:4] if "ven_" in dev else ""
+            vendor = GPU_VENDORS.get(ven, "")
+            low = name.lower()
+            if not vendor:
+                vendor = next((v for k, v in (("nvidia", "nvidia"), ("radeon", "amd"), ("amd", "amd"),
+                                             ("intel", "intel")) if k in low), "")
+            if vendor and "basic" not in low:      # skip "Microsoft Basic Display Adapter"
+                out.append((vendor, name))
+    return out
+
+
+def linux_gpus() -> list[str]:
+    """Vendors of the DRM cards ('nvidia' / 'amd' / 'intel'), integrated GPUs included."""
     import glob
-    import shutil
-    for vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+    out = []
+    for vendor_file in sorted(glob.glob("/sys/class/drm/card[0-9]*/device/vendor")):
+        if "-" in vendor_file.split("/")[4]:       # card0-eDP-1 etc. are connectors, not GPUs
+            continue
         try:
-            vendor = open(vendor_file).read().strip()
+            vendor = open(vendor_file).read().strip().lower().removeprefix("0x")
         except OSError:
             continue
-        if vendor == "0x10de":
-            return "nvidia"
-        if vendor == "0x1002":
-            return "amd"
+        if vendor in GPU_VENDORS:
+            out.append(GPU_VENDORS[vendor])
+    return out
+
+
+def discrete_gpu() -> str | None:
+    """'nvidia' / 'amd' if an NVIDIA or AMD GPU is present (dedicated, or AMD's integrated Radeon graphics,
+    which are fast enough to be worth it). Linux: sysfs; Windows: the registry; macOS: nvidia-smi only."""
+    import shutil
+    vendors = linux_gpus() or [v for v, _ in windows_gpus()]
+    for kind in ("nvidia", "amd"):
+        if kind in vendors:
+            return kind
     return "nvidia" if shutil.which("nvidia-smi") else None
 
 
@@ -348,23 +399,28 @@ def use_dedicated_gpu(kind: str) -> None:
         egl = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
         if os.path.exists(egl):
             os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", egl)
-    elif kind == "amd":
+    elif kind == "amd" and len(linux_gpus()) > 1:
+        # Only with a second GPU: on an AMD APU alone the Radeon already is the default (DRI_PRIME=1 just warns).
         os.environ.setdefault("DRI_PRIME", "1")
 
 
 def pick_delegate(mode: str) -> tuple[str, str]:
-    """mode: auto | gpu | cpu  ->  (delegate, reason). auto = GPU only when a dedicated GPU exists:
-    on integrated graphics (e.g. Intel UHD) MediaPipe's GPU path is no faster than the CPU."""
+    """mode: auto | gpu | cpu  ->  (delegate, reason). auto = GPU only for NVIDIA / AMD graphics:
+    on Intel integrated graphics (e.g. Intel UHD) MediaPipe's GPU path is no faster than the CPU."""
     mode = (mode or "auto").lower()
     if mode == "cpu":
         return "cpu", "forced by config"
+    if sys.platform == "win32":
+        # MediaPipe's Python GPU delegate exists only on Linux; on Windows it would just fail model by model.
+        names = ", ".join(n for _, n in windows_gpus()) or "no GPU found"
+        return "cpu", f"{names}; MediaPipe has no GPU support on Windows, the C++ build (MemeCam-cpp) uses the GPU"
     gpu = discrete_gpu()
     if gpu:
         use_dedicated_gpu(gpu)
-        return "gpu", f"dedicated {gpu} GPU"
+        return "gpu", f"{gpu} GPU"
     if mode == "gpu":
         return "gpu", "forced by config (integrated GPU)"
-    return "cpu", "no dedicated GPU found"
+    return "cpu", "no NVIDIA / AMD GPU found"
 
 
 def create_task(factory, options_cls, model: str, delegate: str, **kw):

@@ -18,7 +18,7 @@ height = 720
 mirror = true
 
 [tracking]
-device = "auto"         # auto = dedicated NVIDIA/AMD GPU if present, else CPU; or "gpu" / "cpu"
+device = "auto"         # auto = NVIDIA / AMD GPU (dedicated or integrated Radeon) if present, else CPU; or "gpu" / "cpu"
 
 [people]
 max_people = 3          # track up to this many people; each one's memes fire on their own
