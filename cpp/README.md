@@ -67,6 +67,13 @@ OpenCV / Qt logs).
 Keys: `d` markers and boxes, `f` meme overlays, `m` mute sounds, `i` gesture debug scores, `r` record to
 `~/Videos/memecam-*.mp4`, `c` recalibrate head pose, `q` / `Esc` quit.
 
+GPU: the Windows build has the LiteRT GPU delegate (OpenCL) and uses it for any NVIDIA / AMD GPU, AMD
+integrated Radeon graphics included; Intel integrated graphics stay on the CPU (XNNPACK is as fast there). The
+GPU is found through OpenCL itself, by its real name (AMD's driver reports `gfx90c` / `gfx1035` codenames), and
+a model the delegate can't run falls back to the CPU. `[tracking] device = "gpu"` / `"cpu"` or
+`MEMECAM_DEVICE=gpu|cpu` overrides `auto`. Linux builds leave the delegate out by default
+(`-DMEMECAM_GPU=ON` adds it; needs an OpenCL driver such as `rocm-opencl-runtime` or `intel-compute-runtime`).
+
 Settings live in `config/config.toml`: camera, tracking device, `[person]` (minimum face width, so people in
 the background are ignored; dropout bridging time), `[display] meme_on_face` (put every meme over your face), the gesture
 thresholds, and one `[memes.*]` table per meme (asset, title, placement, height, hold, trim `frames`,

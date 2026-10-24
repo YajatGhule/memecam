@@ -18,7 +18,7 @@ height = 720
 mirror = true
 
 [tracking]
-device = "auto"         # auto = dedicated NVIDIA/AMD GPU if present, else CPU; or "gpu" / "cpu"
+device = "auto"         # auto = NVIDIA / AMD GPU (dedicated or integrated Radeon) if present, else CPU; or "gpu" / "cpu"
 
 [person]                # one person is tracked: the one closest to the camera
 min_face_width = 0.08   # ignore faces narrower than this fraction of the frame width (people in the background)

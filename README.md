@@ -54,9 +54,14 @@ uv run memecam --verbose    # show MediaPipe/OpenCV/Qt log output (hidden by def
 uv run memecamv2            # v2: everything above plus the 🤌 Godfather and jawline looksmaxxing memes
 ```
 
-Tracking runs on a dedicated NVIDIA/AMD GPU automatically when the machine has one (hybrid laptops are
-routed to the dedicated GPU), otherwise on the CPU. Override with `[tracking] device = "gpu"` or `"cpu"`
-in `memecam/config.toml`; if the GPU fails to start it falls back to the CPU.
+Tracking runs on an NVIDIA or AMD GPU automatically when the machine has one, AMD integrated Radeon graphics
+included (hybrid laptops are routed to the dedicated GPU); on Intel integrated graphics it stays on the CPU,
+which is as fast there. Override with `[tracking] device = "gpu"` or `"cpu"` in `memecam/config.toml`; if the
+GPU fails to start it falls back to the CPU. On Windows the Python version always tracks on the CPU (MediaPipe
+has no GPU support there); the C++ `.exe` uses the GPU through OpenCL, which every NVIDIA / AMD / Intel driver
+ships. It prints the GPU it picked (`[memecam] tracking on GPU (AMD Radeon(TM) 780M, integrated, OpenCL)`);
+`set MEMECAM_DEVICE=cpu` / `gpu` overrides the choice for one run. The first GPU start compiles the GPU
+kernels (a few seconds) and caches them in `%LOCALAPPDATA%\memecam\gpu-cache`.
 
 Virtual webcam needs v4l2loopback once:
 `sudo pacman -S v4l2loopback-dkms && sudo modprobe v4l2loopback exclusive_caps=1 card_label="Meme Cam"`
