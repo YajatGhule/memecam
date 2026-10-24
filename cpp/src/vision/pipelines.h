@@ -28,7 +28,7 @@ struct StageStats {
 
 // ---- hands ---------------------------------------------------------------------------------------
 struct HandModels {
-    HandModels(const std::string& dir, int threads);
+    HandModels(const std::string& dir, int threads, bool gpu = false);
     TfliteModel palm, landmarks, embedder, classifier;
     std::vector<Anchor> anchors;
     std::vector<std::string> labels;
@@ -85,7 +85,7 @@ private:
 
 // ---- face ----------------------------------------------------------------------------------------
 struct FaceModels {
-    FaceModels(const std::string& dir, int threads);
+    FaceModels(const std::string& dir, int threads, bool gpu = false);
     TfliteModel detector, landmarks;
     std::vector<Anchor> anchors;
     StageStats stats;
@@ -109,7 +109,7 @@ private:
 
 // ---- pose ----------------------------------------------------------------------------------------
 struct PoseModels {
-    PoseModels(const std::string& dir, int threads);
+    PoseModels(const std::string& dir, int threads, bool gpu = false);
     TfliteModel detector, landmarks;
     std::vector<Anchor> anchors;
     StageStats stats;

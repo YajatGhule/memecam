@@ -17,8 +17,9 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 }  // namespace
 
-FaceModels::FaceModels(const std::string& dir, int threads)
-    : detector(dir + "/face_detector.tflite", threads), landmarks(dir + "/face_landmarks_detector.tflite", threads) {
+FaceModels::FaceModels(const std::string& dir, int threads, bool gpu)
+    : detector(dir + "/face_detector.tflite", threads, gpu),
+      landmarks(dir + "/face_landmarks_detector.tflite", threads, gpu) {
     AnchorOptions a;
     a.input_w = a.input_h = kDetSize;
     a.min_scale = 0.1484375f;

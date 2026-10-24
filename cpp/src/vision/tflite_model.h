@@ -1,4 +1,5 @@
-// Thin LiteRT (TensorFlow Lite) wrapper: one interpreter per model, float32 tensors, XNNPACK on the CPU.
+// Thin LiteRT (TensorFlow Lite) wrapper: one interpreter per model, float32 tensors, XNNPACK on the CPU or
+// the GPU delegate (OpenCL) when asked for and available.
 #pragma once
 
 #include <memory>
@@ -9,8 +10,9 @@ namespace memecam::vision {
 
 class TfliteModel {
 public:
-    // `threads`: XNNPACK / interpreter threads for this model.
-    TfliteModel(const std::string& path, int threads);
+    // `threads`: XNNPACK / interpreter threads for this model. `gpu`: try the GPU delegate first (falls back
+    // to XNNPACK when the build has none, there is no OpenCL GPU or the model doesn't fit it).
+    TfliteModel(const std::string& path, int threads, bool gpu = false);
     ~TfliteModel();
     TfliteModel(const TfliteModel&) = delete;
     TfliteModel& operator=(const TfliteModel&) = delete;
@@ -24,6 +26,7 @@ public:
     int num_outputs() const;
     void invoke();
     const std::string& path() const { return path_; }
+    bool on_gpu() const;
 
 private:
     std::string path_;

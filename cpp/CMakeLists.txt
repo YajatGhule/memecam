@@ -60,7 +60,18 @@ if(MEMECAM_WITH_VISION)
     message(FATAL_ERROR "LiteRT source missing: run tools/build_litert.sh (or -DMEMECAM_WITH_VISION=OFF)")
   endif()
   set(TFLITE_ENABLE_XNNPACK ON CACHE BOOL "" FORCE)
-  set(TFLITE_ENABLE_GPU OFF CACHE BOOL "" FORCE)
+  # GPU delegate (OpenCL, loaded at run time: OpenCL.dll / libOpenCL.so ship with the graphics driver).
+  # On by default for Windows, where it runs on NVIDIA, AMD (dedicated and integrated Radeon) and Intel GPUs.
+  if(WIN32)
+    set(_memecam_gpu_default ON)
+  else()
+    set(_memecam_gpu_default OFF)
+  endif()
+  option(MEMECAM_GPU "Build the LiteRT GPU delegate (OpenCL)" ${_memecam_gpu_default})
+  if(ANDROID)
+    set(MEMECAM_GPU OFF)
+  endif()
+  set(TFLITE_ENABLE_GPU ${MEMECAM_GPU} CACHE BOOL "" FORCE)
   set(TFLITE_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
   # Without this, tensorflow/lite/CMakeLists.txt downloads a *different* TF release (v2.19) and mixes it
   # with this tree's sources (missing-header errors in the XNNPACK delegate).
@@ -87,6 +98,13 @@ if(MEMECAM_WITH_VISION)
     add_library(memecam_vision STATIC ${VISION_SOURCES})
     target_include_directories(memecam_vision PUBLIC src)
     target_link_libraries(memecam_vision PUBLIC memecam_core tensorflow-lite)
+    if(MEMECAM_GPU)
+      target_compile_definitions(memecam_vision PRIVATE MEMECAM_HAVE_GPU=1)
+      # The GPU delegate code logs through abseil's log module, which the LiteRT CMake doesn't link.
+      target_link_libraries(memecam_vision PUBLIC absl::log_internal_message absl::log_internal_check_op)
+      # CL/cl.h for vision/gpu.cpp (LiteRT adds the fetched OpenCL headers only to its own directory).
+      target_include_directories(memecam_vision SYSTEM PRIVATE ${CMAKE_BINARY_DIR}/opencl_headers)
+    endif()
     if(NOT ANDROID)
       # Parity/benchmark tool: runs the Tracker on a clip against tools/dump_mediapipe.py output.
       add_executable(vision_parity src/vision/parity_main.cpp)

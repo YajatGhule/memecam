@@ -42,8 +42,9 @@ void refine_from_heatmap(Landmarks& lms, const float* hm, int hm_h, int hm_w, in
 }
 }  // namespace
 
-PoseModels::PoseModels(const std::string& dir, int threads)
-    : detector(dir + "/pose_detector.tflite", threads), landmarks(dir + "/pose_landmarks_detector.tflite", threads) {
+PoseModels::PoseModels(const std::string& dir, int threads, bool gpu)
+    : detector(dir + "/pose_detector.tflite", threads, gpu),
+      landmarks(dir + "/pose_landmarks_detector.tflite", threads, gpu) {
     AnchorOptions a;
     a.input_w = a.input_h = kDetSize;
     a.min_scale = 0.1484375f;

@@ -131,10 +131,10 @@ void normalize_object(std::vector<cv::Vec3f>& p) {
 }
 }  // namespace
 
-HandModels::HandModels(const std::string& dir, int threads)
-    : palm(dir + "/hand_detector.tflite", threads),
-      landmarks(dir + "/hand_landmarks_detector.tflite", threads),
-      embedder(dir + "/gesture_embedder.tflite", 1),
+HandModels::HandModels(const std::string& dir, int threads, bool gpu)
+    : palm(dir + "/hand_detector.tflite", threads, gpu),
+      landmarks(dir + "/hand_landmarks_detector.tflite", threads, gpu),
+      embedder(dir + "/gesture_embedder.tflite", 1),   // the tiny gesture models stay on the CPU
       classifier(dir + "/canned_gesture_classifier.tflite", 1),
       labels{"None", "Closed_Fist", "Open_Palm", "Pointing_Up", "Thumb_Down", "Thumb_Up", "Victory", "ILoveYou"} {
     AnchorOptions a;

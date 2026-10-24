@@ -11,6 +11,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "tracking.h"
+#include "vision/gpu.h"
 #include "vision/pipelines.h"
 
 namespace memecam {
@@ -57,8 +58,9 @@ struct Tracker::Impl {
         : pose_async(pose_async_), min_face_width(cfg.min_face_width), ids(ID_MAX_JUMP, cfg.forget) {
         const std::string dir = project_path("models");
         const int threads = model_threads();
-        hand_models = std::make_unique<HandModels>(dir, threads);
-        face_models = std::make_unique<FaceModels>(dir, threads);
+        const GpuChoice accel = choose_gpu(cfg.device);
+        hand_models = std::make_unique<HandModels>(dir, threads, accel.use);
+        face_models = std::make_unique<FaceModels>(dir, threads, accel.use);
         // MEMECAM_HAND_MP=1: MediaPipe's own hand graph, without the pose-seeded crops, prediction, smoothing
         // and pose handedness (for comparisons with the Python app).
         // MEMECAM_HAND_OFF=predict,smooth,...: switch single additions off.
@@ -74,15 +76,15 @@ struct Tracker::Impl {
         hands = std::make_unique<HandTracker>(*hand_models, 2, ho);
         face = std::make_unique<FaceTracker>(*face_models, 1, RESCAN_FACE);
         if (use_pose) {
-            pose_models = std::make_unique<PoseModels>(dir, threads);
+            pose_models = std::make_unique<PoseModels>(dir, threads, accel.use);
             pose = std::make_unique<PoseTracker>(*pose_models, 1, RESCAN_POSE);
         }
-        std::string mode = cfg.device;
-        for (auto& c : mode) c = static_cast<char>(std::tolower(c));
-        const char* why = mode == "cpu" ? "forced by config"
-                          : mode == "gpu" ? "GPU requested, but this build has no LiteRT GPU delegate"
-                                          : "LiteRT XNNPACK; no GPU delegate in this build";
-        std::printf("[memecam] tracking on CPU (%s)\n", why);
+        const bool on_gpu = hand_models->landmarks.on_gpu() || face_models->landmarks.on_gpu() ||
+                            (pose_models && pose_models->landmarks.on_gpu());
+        device = on_gpu ? "gpu" : "cpu";
+        if (on_gpu) std::printf("[memecam] tracking on GPU (%s)\n", accel.why.c_str());
+        else if (accel.use) std::printf("[memecam] tracking on CPU (the GPU delegate failed on %s)\n", accel.why.c_str());
+        else std::printf("[memecam] tracking on CPU (%s)\n", accel.why.c_str());
         std::fflush(stdout);
     }
 
