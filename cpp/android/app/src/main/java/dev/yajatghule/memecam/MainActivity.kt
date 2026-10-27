@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private var markers = true
     private var memes = true
     private var mute = false
+    private var debug = false
     private var v2 = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,6 +85,7 @@ class MainActivity : AppCompatActivity() {
             toggle("Memes", memes) { memes = it },
             toggle("Sound", !mute) { mute = !it; prefs.edit().putBoolean("mute", mute).apply() },
             toggle("v2 memes", v2) { v -> v2 = v; prefs.edit().putBoolean("v2", v).apply(); reload() },
+            toggle("Debug", debug) { debug = it },
             button("Flip camera") { front = !front; prefs.edit().putBoolean("front", front).apply(); bindCamera() },
             button("Recalibrate") { Native.calibrate(); Toast.makeText(this, "Look straight ahead", Toast.LENGTH_SHORT).show() },
             button("Photo") { savePhoto() },
@@ -101,7 +103,7 @@ class MainActivity : AppCompatActivity() {
         buttons.forEach { it.visibility = View.INVISIBLE }
     }
 
-    private fun apply() = Native.setOptions(markers, memes, mute)
+    private fun apply() { Native.setOptions(markers, memes, mute); Native.setDebug(debug) }
 
     // ---- engine ----
     /** Copies config/, assets/ and models/ out of the APK on first start (and after an update). */

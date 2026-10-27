@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,6 +32,7 @@ using Clock = std::chrono::steady_clock;
 struct Published {
     Frame fr;
     std::vector<Shown> shown;
+    std::map<int, std::map<std::string, Detection>> dets;   // raw gesture scores, for the debug overlay
     long count = 0;
 };
 
@@ -86,7 +88,7 @@ struct Engine {
                 __android_log_print(ANDROID_LOG_ERROR, "memecam", "tracking failed: %s", e.what());
                 continue;
             }
-            crowd->update(p->fr, t);
+            p->dets = crowd->update(p->fr, t);
             p->shown = crowd->snapshot();
             p->count = ++count;
             std::lock_guard lock(mu);
@@ -102,6 +104,34 @@ std::string jstr(JNIEnv* env, jstring s) {
     std::string out = c;
     env->ReleaseStringUTFChars(s, c);
     return out;
+}
+
+// Debug mode: a text panel (FPS, device, frame, detections, memes) on a black backdrop + the gesture score bars.
+void debug_overlay(cv::Mat& img, const Engine& e, const Published& cur, const std::vector<std::string>& active) {
+    auto yes = [](bool b) { return b ? "yes" : "no"; };
+    std::string memes;
+    for (const auto& a : active) memes += (memes.empty() ? "" : ", ") + a;
+    const std::vector<std::string> lines = {
+        cv::format("display %.0f fps  tracking %.0f fps", e.fps, e.track_fps),
+        "device " + e.tracker->device(),
+        cv::format("frame %dx%d", img.cols, img.rows),
+        cv::format("face %s  hands %d  pose %s", yes(cur.fr.face.has_value()), int(cur.fr.hands.size()),
+                   yes(cur.fr.pose != nullptr)),
+        "memes " + (memes.empty() ? std::string("-") : memes),
+    };
+    const double scale = 0.5;
+    int w = 0, base = 0;
+    for (const auto& l : lines) w = std::max(w, cv::getTextSize(l, cv::FONT_HERSHEY_SIMPLEX, scale, 1, &base).width);
+    const int top = 60, lh = 20, x = 8;
+    cv::Mat roi = img(cv::Rect(x - 4, top - 16, std::min(w + 12, img.cols - x + 4), lh * int(lines.size()) + 8) &
+                      cv::Rect(0, 0, img.cols, img.rows));
+    roi.convertTo(roi, -1, 0.35);   // darken instead of a solid panel so the picture stays visible
+    for (size_t i = 0; i < lines.size(); i++)
+        cv::putText(img, lines[i], cv::Point(x, top + lh * int(i)), cv::FONT_HERSHEY_SIMPLEX, scale,
+                    cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+    auto it = cur.dets.find(cur.fr.pid);
+    static const std::map<std::string, Detection> empty;
+    debug_panel(img, it != cur.dets.end() ? it->second : empty, e.cfg);
 }
 
 }  // namespace
@@ -182,6 +212,7 @@ JNIEXPORT jstring JNICALL Java_dev_yajatghule_memecam_Native_process(JNIEnv* env
     std::optional<bool> sound_on;
     if (e->sounds && e->sounds->ok()) sound_on = !e->sounds->muted;
     hud(frame, e->fps, active, false, e->markers, e->track_fps, e->memes, sound_on, false);
+    if (e->debug) debug_overlay(frame, *e, *cur, active);
 
     AndroidBitmapInfo info;
     void* px = nullptr;
@@ -201,6 +232,10 @@ JNIEXPORT void JNICALL Java_dev_yajatghule_memecam_Native_setOptions(JNIEnv*, jc
     if (!g_engine) return;
     g_engine->markers = markers, g_engine->memes = memes;
     if (g_engine->sounds) g_engine->sounds->muted = mute;
+}
+
+JNIEXPORT void JNICALL Java_dev_yajatghule_memecam_Native_setDebug(JNIEnv*, jclass, jboolean on) {
+    if (g_engine) g_engine->debug = on;
 }
 
 JNIEXPORT void JNICALL Java_dev_yajatghule_memecam_Native_calibrate(JNIEnv*, jclass) {

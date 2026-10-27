@@ -20,6 +20,8 @@ object Native {
     ): String?
 
     @JvmStatic external fun setOptions(markers: Boolean, memes: Boolean, mute: Boolean)
+    /** Debug overlay on the output frame: FPS, device, detections, gesture scores. */
+    @JvmStatic external fun setDebug(on: Boolean)
     @JvmStatic external fun calibrate()
     @JvmStatic external fun release()
 }
