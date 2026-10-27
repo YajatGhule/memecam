@@ -127,7 +127,7 @@ done
 
 say "done"
 echo "  run:     memecam-cpp      (or memecamv2-cpp for the Godfather / looksmaxxing memes)"
-echo "  keys:    d markers, f memes, i debug, r record, c recalibrate, q quit"
+echo "  keys:    d markers, f memes, i debug, n next camera, r record, c recalibrate, q quit"
 echo "  update:  re-run this installer"
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH: add  export PATH=\"$BIN:\$PATH\"  to your shell rc";; esac
 id -nG 2>/dev/null | grep -qw video || [ -r /dev/video0 ] || warn "no access to /dev/video0: sudo usermod -aG video $USER, then log in again"

@@ -315,6 +315,28 @@ struct Args {
     std::vector<std::string> force;
 };
 
+constexpr int MAX_CAMERA = 4;   // fallback / [n] switching tries camera indexes 0..4
+
+// Opens camera `index` and reads one frame into `first`; leaves `cap` closed on failure.
+bool open_camera(cv::VideoCapture& cap, int index, const Config& cfg, cv::Mat& first) {
+    cap.release();
+#ifdef _WIN32
+    cap.open(index, cv::CAP_DSHOW);
+#else
+    cap.open(index, cv::CAP_V4L2);
+#endif
+    if (!cap.isOpened()) return false;
+    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, cfg.width);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, cfg.height);
+    cap.set(cv::CAP_PROP_FPS, 30);
+    // No CAP_PROP_BUFFERSIZE=1: with a single V4L2 buffer the camera skips every other frame (15 FPS).
+    // Latency stays low anyway because the Grabber thread always drains to the newest frame.
+    if (cap.read(first) && !first.empty()) return true;
+    cap.release();
+    return false;
+}
+
 int run(const Args& args) {
     Config cfg;
 #ifdef MEMECAM_V2
@@ -324,7 +346,7 @@ int run(const Args& args) {
 #endif
     cv::VideoCapture cap;
     std::optional<VideoClock> clock;
-    int W = 0, H = 0;
+    int W = 0, H = 0, camera = -1;   // camera: index in use (webcam mode)
     if (!args.video.empty()) {
         cap.open(args.video);
         if (!cap.isOpened()) {
@@ -334,19 +356,19 @@ int run(const Args& args) {
         clock.emplace(cap);
         W = int(cap.get(cv::CAP_PROP_FRAME_WIDTH)), H = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
     } else {
-#ifdef _WIN32
-        cap.open(args.camera.value_or(cfg.camera_index), cv::CAP_DSHOW);
-#else
-        cap.open(args.camera.value_or(cfg.camera_index), cv::CAP_V4L2);
-#endif
-        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-        cap.set(cv::CAP_PROP_FRAME_WIDTH, cfg.width);
-        cap.set(cv::CAP_PROP_FRAME_HEIGHT, cfg.height);
-        cap.set(cv::CAP_PROP_FPS, 30);
-        // No CAP_PROP_BUFFERSIZE=1: with a single V4L2 buffer the camera skips every other frame (15 FPS).
-        // Latency stays low anyway because the Grabber thread always drains to the newest frame.
+        // MEMECAM_CAMERA=N overrides the config (a double-clicked .exe can't pass --camera)
+        if (const char* e = std::getenv("MEMECAM_CAMERA"); e && *e && !args.camera) camera = std::atoi(e);
+        else camera = args.camera.value_or(cfg.camera_index);
+        // If that camera doesn't open, try the others (0..4) before giving up.
         cv::Mat first;
-        if (!cap.isOpened() || !cap.read(first) || first.empty()) {
+        if (!open_camera(cap, camera, cfg, first)) {
+            for (int i = 0; i <= MAX_CAMERA && !cap.isOpened(); i++)
+                if (i != camera && open_camera(cap, i, cfg, first)) {
+                    std::printf("[memecam] camera %d did not open, using camera %d\n", camera, i);
+                    camera = i;
+                }
+        }
+        if (!cap.isOpened()) {
             std::fprintf(g_err, "could not read from the webcam — is another app using it?\n");
             return 1;
         }
@@ -513,6 +535,25 @@ int run(const Args& args) {
             else if (key == 'd') show_markers = !show_markers;
             else if (key == 'm' && sounds) sounds->muted = !sounds->muted;
             else if (key == 'i') show_debug = !show_debug;
+            else if (key == 'n' && camera >= 0 && live && !writer.isOpened()) {
+                // next camera that opens (wraps around); the capture thread is restarted around the switch
+                live_tracker.reset();
+                grabber.reset();
+                cv::Mat first;
+                for (int k = 1; k <= MAX_CAMERA + 1; k++) {
+                    int i = (camera + k) % (MAX_CAMERA + 1);
+                    if (open_camera(cap, i, cfg, first)) {
+                        camera = i;
+                        break;
+                    }
+                }
+                if (!cap.isOpened()) open_camera(cap, camera, cfg, first);   // nothing else opened: back to this one
+                std::printf("[memecam] camera %d\n", camera);
+                std::fflush(stdout);
+                grabber = std::make_unique<Grabber>(cap, mirror, t0, std::nullopt, false);
+                live_tracker = std::make_unique<LiveTracker>(*grabber, *tracker, crowd, W, H, args.force);
+                seq = 0;
+            }
             else if (key == 'c') {
                 if (live_tracker) live_tracker->calibrate();   // detector state belongs to the tracking thread
                 else crowd.calibrate();
@@ -556,7 +597,7 @@ int main(int argc, char** argv) {
     CLI::App app{std::string(TITLE) +
                  ": webcam + mocap markers + gesture-triggered memes.\n"
                  "Keys: d = toggle markers/bounding boxes, f = toggle meme overlays, m = mute sounds, i = gesture debug scores,\n"
-                 "      r = record, c = recalibrate head pose, q / Esc = quit"};
+                 "      n = next camera, r = record, c = recalibrate head pose, q / Esc = quit"};
     Args args;
     args.config = project_path("config/config.toml");
     app.add_option("--camera", args.camera, "camera index (default from config.toml)");

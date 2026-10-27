@@ -60,11 +60,11 @@ build/memecam --bench 10            # headless: display FPS vs tracking FPS
 build/memecam --video clip.webm --events          # print every meme switching on/off in a clip
 ```
 
-Flags: `--camera N`, `--no-pose` (faster), `--config FILE`, `--video FILE`, `--realtime`, `--no-mirror`,
+Flags: `--camera N` (or `MEMECAM_CAMERA=N`; if that camera won't open, 0 to 4 are tried), `--no-pose` (faster), `--config FILE`, `--video FILE`, `--realtime`, `--no-mirror`,
 `--snapshot FILE --frames N`, `--force MEME` (repeatable), `--bench SECONDS`, `--events`, `--verbose` (show LiteRT /
 OpenCV / Qt logs).
 
-Keys: `d` markers and boxes, `f` meme overlays, `m` mute sounds, `i` gesture debug scores, `r` record to
+Keys: `d` markers and boxes, `f` meme overlays, `m` mute sounds, `i` gesture debug scores, `n` next camera, `r` record to
 `~/Videos/memecam-*.mp4`, `c` recalibrate head pose, `q` / `Esc` quit.
 
 GPU: the Windows build has the LiteRT GPU delegate (OpenCL) and uses it for any NVIDIA / AMD GPU, AMD
