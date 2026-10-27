@@ -6,22 +6,14 @@
 #include <string>
 #include <vector>
 
+#include "gpu_choice.h"
+
 namespace memecam::vision {
 
-struct GpuDevice {
-    std::string name;          // marketing name ("AMD Radeon(TM) 680M"), not AMD's "gfx1035" codename
-    std::string vendor;        // "amd" / "nvidia" / "intel" / other vendor string
-    bool integrated = false;   // shares memory with the CPU (APU / iGPU)
-    unsigned score = 0;        // compute units x clock: the delegate picks the highest
-};
 
 // All OpenCL GPUs, the one the delegate will use first. Empty without OpenCL or the delegate.
 std::vector<GpuDevice> gpu_devices();
 
-struct GpuChoice {
-    bool use = false;
-    std::string why;   // for the "[memecam] tracking on ..." line
-};
 
 // mode (config `device`): cpu | gpu | auto. auto uses any NVIDIA / AMD GPU (dedicated or integrated Radeon)
 // and any dedicated GPU, but not Intel integrated graphics, where the GPU path is no faster than XNNPACK.
