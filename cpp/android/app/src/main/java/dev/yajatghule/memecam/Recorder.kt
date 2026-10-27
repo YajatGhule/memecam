@@ -15,7 +15,7 @@ import android.view.Surface
  * Frames are drawn onto MediaRecorder's input surface as they are shown.
  */
 class Recorder(private val context: Context, width: Int, height: Int, withMic: Boolean) {
-    private val uri: Uri
+    val uri: Uri
     private val fd: ParcelFileDescriptor
     private val recorder: MediaRecorder
     private val surface: Surface

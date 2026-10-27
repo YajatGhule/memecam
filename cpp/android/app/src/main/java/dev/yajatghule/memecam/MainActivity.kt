@@ -2,13 +2,17 @@ package dev.yajatghule.memecam
 
 import android.Manifest
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -18,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -39,6 +44,9 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastShown: Bitmap? = null
     @Volatile private var recorder: Recorder? = null
     private lateinit var recButton: Button
+    private lateinit var shareButton: Button
+    private var camera: Camera? = null
+    private var lastSaved: Pair<Uri, String>? = null   // the newest recording / photo and its MIME type, for Share
     @Volatile private var ready = false
     private var front = true
     private var markers = true
@@ -67,6 +75,16 @@ class MainActivity : AppCompatActivity() {
         status = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 15f; gravity = Gravity.CENTER; setPadding(dp(24), dp(24), dp(24), dp(24))
         }
+        // pinch to zoom the camera
+        val pinch = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(d: ScaleGestureDetector): Boolean {
+                val cam = camera ?: return true
+                val z = cam.cameraInfo.zoomState.value ?: return true
+                cam.cameraControl.setZoomRatio((z.zoomRatio * d.scaleFactor).coerceIn(z.minZoomRatio, z.maxZoomRatio))
+                return true
+            }
+        })
+        image.setOnTouchListener { _, ev: MotionEvent -> pinch.onTouchEvent(ev); true }
         root.addView(status, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
 
         fun button(label: String, click: (Button) -> Unit) = Button(this).apply {
@@ -90,6 +108,7 @@ class MainActivity : AppCompatActivity() {
             button("Recalibrate") { Native.calibrate(); Toast.makeText(this, "Look straight ahead", Toast.LENGTH_SHORT).show() },
             button("Photo") { savePhoto() },
             button("Record") { toggleRecording() }.also { recButton = it },
+            button("Share") { share() }.also { shareButton = it },
         )
         buttons = b
         val bar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(12)) }
@@ -101,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(bar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         setContentView(root)
         buttons.forEach { it.visibility = View.INVISIBLE }
+        shareButton.visibility = View.GONE
     }
 
     private fun apply() { Native.setOptions(markers, memes, mute); Native.setDebug(debug) }
@@ -131,6 +151,7 @@ class MainActivity : AppCompatActivity() {
             if (err != null) { status.text = "Could not start:\n$err"; return@runOnUiThread }
             status.text = ""
             buttons.forEach { it.visibility = View.VISIBLE }
+            shareButton.visibility = if (lastSaved != null) View.VISIBLE else View.GONE
             apply()
             ready = true
             requestCamera()
@@ -185,7 +206,7 @@ class MainActivity : AppCompatActivity() {
                 } finally { proxy.close() }
             }
             provider.unbindAll()
-            provider.bindToLifecycle(this, if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA, use)
+            camera = provider.bindToLifecycle(this, if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA, use)
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -196,7 +217,8 @@ class MainActivity : AppCompatActivity() {
             recButton.text = "Record"
             Thread {
                 val ok = r.stop()
-                runOnUiThread { Toast.makeText(this, if (ok) "Saved to Movies/MemeCam" else "Recording failed", Toast.LENGTH_SHORT).show() }
+                if (ok) lastSaved = r.uri to "video/mp4"
+                runOnUiThread { if (ok) shareButton.visibility = View.VISIBLE; Toast.makeText(this, if (ok) "Saved to Movies/MemeCam" else "Recording failed", Toast.LENGTH_SHORT).show() }
             }.start()
             return
         }
@@ -226,7 +248,15 @@ class MainActivity : AppCompatActivity() {
         val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
         if (uri == null) { Toast.makeText(this, "Could not save", Toast.LENGTH_SHORT).show(); return }
         contentResolver.openOutputStream(uri)?.use { bm.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        lastSaved = uri to "image/jpeg"
+        shareButton.visibility = View.VISIBLE
         Toast.makeText(this, "Saved to Pictures/MemeCam", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun share() {
+        val (uri, type) = lastSaved ?: return
+        val send = Intent(Intent.ACTION_SEND).apply { this.type = type; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        startActivity(Intent.createChooser(send, "Share"))
     }
 
     override fun onPause() {
