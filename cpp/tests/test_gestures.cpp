@@ -499,6 +499,55 @@ TEST_CASE("dafoe recovers from bad initial baseline", "[gestures]") {
     CHECK_FALSE(neutral(det, 300, 0.6, 0.1)["dafoe"].raw);
 }
 
+TEST_CASE("dafoe from the pose alone when the face mesh drops out", "[gestures]") {
+    Detectors det;
+    std::map<std::string, Detection> d;
+    for (int i = 0; i < 30; ++i) d = run(det, {}, std::nullopt, i / 30.0, 0.0, head_pose(-0.1));
+    CHECK_FALSE(d["dafoe"].raw);
+    CHECK(run(det, {}, std::nullopt, 1.1, 0.0, head_pose(-0.25))["dafoe"].raw);
+}
+
+TEST_CASE("dafoe pose jitter does not fire", "[gestures]") {
+    Detectors det;
+    for (int i = 0; i < 30; ++i) run(det, {}, std::nullopt, i / 30.0, 0.0, head_pose(-0.1));
+    int i = 0;
+    for (double r : {-0.08, -0.13, -0.11, -0.15, -0.09})
+        CHECK_FALSE(run(det, {}, std::nullopt, 1 + (i++) / 30.0, 0.0, head_pose(r))["dafoe"].raw);
+}
+
+TEST_CASE("dafoe stays on when the face mesh is lost mid tilt", "[gestures]") {
+    Detectors det;
+    for (int i = 0; i < 30; ++i) run(det, {}, make_face(0.6), i / 30.0, 0.0, head_pose(-0.1));
+    CHECK(run(det, {}, make_face(0.45), 1.1, 0.0, head_pose(-0.2))["dafoe"].raw);
+    for (int i = 0; i < 30; ++i) CHECK(run(det, {}, std::nullopt, 1.2 + i / 30.0, 0.0, head_pose(-0.15))["dafoe"].raw);
+    // a tilt that was never seen on the face does not latch
+    Detectors det2;
+    for (int i = 0; i < 30; ++i) run(det2, {}, std::nullopt, i / 30.0, 0.0, head_pose(-0.1));
+    CHECK_FALSE(run(det2, {}, std::nullopt, 1.1, 0.0, head_pose(-0.15))["dafoe"].raw);
+}
+
+TEST_CASE("dafoe pose alone is ignored while the face mesh says neutral", "[gestures]") {
+    Detectors det;
+    for (int i = 0; i < 30; ++i) run(det, {}, make_face(0.6), i / 30.0, 0.0, head_pose(-0.1));
+    CHECK_FALSE(run(det, {}, make_face(0.6), 1.1, 0.0, head_pose(-0.3))["dafoe"].raw);
+}
+
+TEST_CASE("dafoe ignores a head turned away", "[gestures]") {
+    Detectors det;
+    for (int i = 0; i < 30; ++i) run(det, {}, std::nullopt, i / 30.0, 0.0, head_pose(-0.1));
+    Pose turned = *head_pose(-0.3);
+    turned[7].x = FACE_C.x - 20;
+    turned[8].x = FACE_C.x + 20;
+    CHECK_FALSE(run(det, {}, std::nullopt, 1.1, 0.0, std::make_shared<const Pose>(turned))["dafoe"].raw);
+}
+
+TEST_CASE("dafoe pose tilt ends when the head comes back", "[gestures]") {
+    Detectors det;
+    for (int i = 0; i < 30; ++i) run(det, {}, std::nullopt, i / 30.0, 0.0, head_pose(-0.1));
+    run(det, {}, std::nullopt, 1.0, 0.0, head_pose(-0.25));
+    CHECK_FALSE(run(det, {}, std::nullopt, 2.0, 0.0, head_pose(-0.1))["dafoe"].raw);
+}
+
 TEST_CASE("dafoe calibrate resets", "[gestures]") {
     Detectors det;
     neutral(det);

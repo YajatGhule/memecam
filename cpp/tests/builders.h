@@ -120,6 +120,15 @@ inline Pose make_pose_arr(cv::Point2d wl, cv::Point2d wr, double vis = 0.95) {
     p[16] = {wr.x, wr.y, 0, vis};
     return p;
 }
+// make_pose_arr() plus eyes: `eyes_above_ears` is the eye height relative to the ears in ear-distances
+// (negative = eyes above the ears, which tipping the head back does more of).
+inline std::shared_ptr<const Pose> head_pose(double eyes_above_ears = -0.1, double vis = 0.95) {
+    Pose p = make_pose_arr({480, 560}, {800, 560}, vis);
+    double ear_d = p[8].x - p[7].x;
+    p[2] = {FACE_C.x - 20, FACE_C.y + eyes_above_ears * ear_d, 0, vis};
+    p[5] = {FACE_C.x + 20, FACE_C.y + eyes_above_ears * ear_d, 0, vis};
+    return std::make_shared<const Pose>(p);
+}
 inline std::shared_ptr<const Pose> make_pose(cv::Point2d wl, cv::Point2d wr, double vis = 0.95) {
     return std::make_shared<const Pose>(make_pose_arr(wl, wr, vis));
 }
@@ -133,10 +142,11 @@ inline std::shared_ptr<const cv::Mat> motion_frac(double motion) {
 
 inline std::map<std::string, Detection> run(Detectors& det, const std::vector<Hand>& hands = {},
                                             std::optional<Face> face = std::nullopt, double now = 0.0,
-                                            double motion = 0.0) {
+                                            double motion = 0.0, std::shared_ptr<const Pose> pose = nullptr) {
     Frame fr;
     fr.hands = hands;
     fr.face = std::move(face);
+    fr.pose = std::move(pose);
     fr.motion = motion_frac(motion);
     fr.width = 1280;
     fr.height = 720;

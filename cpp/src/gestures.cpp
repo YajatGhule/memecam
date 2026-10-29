@@ -19,6 +19,7 @@ const std::map<std::string, double> DEFAULTS = {
     {"cross_dist", 0.25},              // gojo: index & middle tips closer than this (hand-sizes) = crossed
     {"peace_gap", 0.35},               // V sign: index & middle tips at least this far apart (hand-sizes)
     {"head_tilt_up", 0.10},            // dafoe: drop in nose position ratio vs calibrated baseline
+    {"pose_tilt_up", 0.07},            // dafoe from the body pose: rise of the eyes vs the ears (ear-distances)
     {"motion", 0.07},                  // talking-to-wall: fraction of changed pixels around the face
     {"hand_speed", 3.0},               // talking-to-wall: wrist speed in face-widths / second
     {"mahoraga_dist", 1.85},           // mahoraga: knuckles within this many face-widths of each other
@@ -32,6 +33,11 @@ const std::map<std::string, double> DEFAULTS = {
 constexpr double BOUNCE_TAU = 0.4, BOUNCE_WINDOW = 1.2, BOUNCE_CORR = 0.5, SIGN_TAU = 0.25;
 constexpr double SWING_WINDOW = 1.0, SWING_REACH = 2.0, SWING_TOP = 0.3, SWING_MIN_MOTION = 0.02,
                  SWING_CORR = 0.5, SWING_AMP = 0.4;
+// dafoe: the face tracker loses a head tipped far back, so a tilt seen within TILT_LATCH seconds stays
+// latched and the pose only has to show TILT_LATCH_FRAC of its threshold; TILT_BRIDGE rides out gaps.
+// The face counts as having shown a tilt at TILT_SEEN_FRAC of its threshold; the pose is ignored once the ears
+// are closer than TILT_EAR_MIN x their usual distance (head turned away).
+constexpr double TILT_LATCH = 1.5, TILT_LATCH_FRAC = 0.4, TILT_BRIDGE = 0.3, TILT_SEEN_FRAC = 1.0, TILT_EAR_MIN = 0.55;
 constexpr double MOTION_REACH = 3.0, FLYING_KEEP = 0.6, PRESENT_SIDE = 0.7, PRESENT_GAP = 0.25;
 constexpr double PRESENT_LOW[2] = {0.5, 3.0};
 
@@ -143,6 +149,11 @@ std::optional<HeadRef> head_ref(const Frame& fr) {
 struct Detectors::State {
     std::optional<double> nose_baseline;
     int face_frames = 0;
+    std::optional<double> pose_baseline;
+    int pose_frames = 0;
+    std::optional<double> ear_ref;             // dafoe: usual ear distance in the pose, pixels
+    double tilt_seen = -1e9;                   // dafoe: last time the face showed (at least half) a tilt
+    double tilt_raw_at = -1e9;                 // dafoe: last time the tilt was on
     std::vector<P2> prev_wrists;
     std::optional<double> prev_t;
     double hand_speed = 0.0;
@@ -184,6 +195,10 @@ double Detectors::cfg(const std::string& key, double def) const {
 void Detectors::calibrate() {
     st_->nose_baseline.reset();
     st_->face_frames = 0;
+    st_->pose_baseline.reset();
+    st_->pose_frames = 0;
+    st_->ear_ref.reset();
+    st_->tilt_seen = st_->tilt_raw_at = -1e9;
 }
 
 double Detectors::motion_level(const Frame& fr) const {
@@ -473,25 +488,48 @@ std::map<std::string, Detection> Detectors::run(const Frame& fr, double now) {
     d["scuba_cat"] = Detection{scuba, covering / 2.0, fbox};
 
     // ---- dafoe: head tilted back ----
-    if (face) {
-        double tilt = 0.0;
-        if (covering == 0) {   // head_tilt
-            const auto& fp = face->pts;
-            double top = fp[10][1], nose = fp[1][1], chin = fp[152][1];
-            double r = (nose - top) / (chin - top + 1e-6);
-            S.face_frames += 1;
-            if (!S.nose_baseline) S.nose_baseline = r;
-            double delta = *S.nose_baseline - r;
-            if (S.face_frames <= 15) {          // warm-up: settle on the neutral pose, no triggers yet
-                *S.nose_baseline += 0.25 * (r - *S.nose_baseline);
-                tilt = 0.0;
-            } else {
-                double rate = std::abs(delta) < C("head_tilt_up") * 0.5 ? 0.02 : delta > 0 ? 0.004 : 0.001;
-                *S.nose_baseline += rate * (r - *S.nose_baseline);
-                tilt = delta;
+    if (face || fr.pose) {
+        // Drop of `r` below its calibrated neutral value; anything clearly off-neutral only nudges the baseline.
+        auto tilt_delta = [&](double r, double thr, std::optional<double>& base, int& frames) {
+            frames += 1;
+            if (!base) base = r;
+            double delta = *base - r;
+            if (frames <= 15) {                 // warm-up: settle on the neutral pose, no triggers yet
+                *base += 0.25 * (r - *base);
+                return 0.0;
             }
+            double rate = std::abs(delta) < thr * 0.5 ? 0.02 : delta > 0 ? 0.004 : 0.001;
+            *base += rate * (r - *base);
+            return delta;
+        };
+        bool on = false;
+        if (covering == 0) {
+            bool raw = false;
+            if (face) {
+                const auto& fp = face->pts;
+                double top = fp[10][1], nose = fp[1][1], chin = fp[152][1];
+                double tilt = tilt_delta((nose - top) / (chin - top + 1e-6), C("head_tilt_up"), S.nose_baseline, S.face_frames);
+                if (tilt > C("head_tilt_up") * TILT_SEEN_FRAC) S.tilt_seen = now;
+                raw = tilt > C("head_tilt_up");
+            }
+            if (fr.pose) {
+                const Pose& pp = *fr.pose;
+                double ear_d = dist(lm(pp, P_EARS[0]), lm(pp, P_EARS[1]));
+                if (std::min({pp[2].visibility, pp[5].visibility, pp[P_EARS[0]].visibility, pp[P_EARS[1]].visibility}) > VIS &&
+                    ear_d >= 1e-6) {
+                    double r = ((pp[2].y + pp[5].y) / 2 - (pp[P_EARS[0]].y + pp[P_EARS[1]].y) / 2) / ear_d;
+                    double pd = tilt_delta(r, C("pose_tilt_up"), S.pose_baseline, S.pose_frames);
+                    if (pd < C("pose_tilt_up") * 0.5) S.ear_ref = S.ear_ref ? *S.ear_ref + 0.05 * (ear_d - *S.ear_ref) : ear_d;
+                    const bool latched = now - S.tilt_seen < TILT_LATCH;
+                    // The pose backs the face mesh up only when the mesh is gone (a face that is there decides alone).
+                    if (!face && ear_d >= TILT_EAR_MIN * S.ear_ref.value_or(ear_d))
+                        raw = raw || pd > C("pose_tilt_up") * (latched ? TILT_LATCH_FRAC : 1.0);
+                }
+            }
+            if (raw) S.tilt_raw_at = now;
+            on = raw || (!face && now - S.tilt_raw_at < TILT_BRIDGE);
         }
-        d["dafoe"] = Detection{tilt > C("head_tilt_up"), tilt / C("head_tilt_up") * 0.5, fbox};
+        d["dafoe"] = Detection{on, on ? 1.0 : 0.0, fbox};
     }
 
     // ---- two-arm poses ----

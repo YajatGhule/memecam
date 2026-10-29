@@ -29,6 +29,7 @@ DEFAULTS = {
     "cross_dist": 0.25,              # gojo: index & middle tips closer than this (hand-sizes) = crossed
     "peace_gap": 0.35,               # V sign: index & middle tips at least this far apart (hand-sizes)
     "head_tilt_up": 0.10,            # dafoe: drop in nose position ratio vs calibrated baseline
+    "pose_tilt_up": 0.07,            # dafoe from the body pose: rise of the eyes vs the ears (ear-distances)
     "motion": 0.07,                  # talking-to-wall: fraction of changed pixels around the face
     "hand_speed": 3.0,               # talking-to-wall: wrist speed in face-widths / second
     "mahoraga_dist": 1.85,           # mahoraga: knuckles within this many face-widths of each other
@@ -51,6 +52,12 @@ SWING_TOP = 0.3         # ...from this many face-widths above the nose/mouth poi
 SWING_MIN_MOTION = 0.02 # a side counts as moving when this fraction of its region changed
 SWING_CORR = 0.5        # the two sides' motion heights must be this anti-correlated (-1..1)
 SWING_AMP = 0.4         # ...and their height difference swing this much (std, face-widths)
+
+TILT_LATCH = 1.5        # dafoe: the face tracker loses a head tipped far back; a tilt seen this recently stays latched...
+TILT_LATCH_FRAC = 0.4   # ...and the pose only has to show this fraction of its threshold to keep it on
+TILT_BRIDGE = 0.3       # dafoe: with no face mesh, ride out single-frame gaps (the trigger needs the tilt held without a break)
+TILT_SEEN_FRAC = 1.0     # dafoe: the face counts as having shown a tilt (for the latch) at this fraction of its threshold
+TILT_EAR_MIN = 0.55     # dafoe: the pose is ignored once the ears are closer than this × their usual distance (head turned away)
 
 MOTION_REACH = 3.0      # talking to a wall: motion counts within this many face-widths left / right of the head
 FLYING_KEEP = 0.6       # talking to a wall: once flying, the hands stay "flying" down to this × the thresholds
@@ -97,6 +104,11 @@ class Detectors:
         self.cfg = {**DEFAULTS, **cfg}
         self.nose_baseline: float | None = None
         self.face_frames = 0
+        self.pose_baseline: float | None = None
+        self.pose_frames = 0
+        self.ear_ref: float | None = None   # dafoe: usual ear distance in the pose, pixels
+        self.tilt_seen = -1e9          # dafoe: last time the face showed (at least half) a tilt
+        self.tilt_raw_at = -1e9        # dafoe: last time the tilt was on
         self.prev_wrists: list[np.ndarray] = []
         self.prev_t: float | None = None
         self.hand_speed = 0.0
@@ -124,6 +136,10 @@ class Detectors:
     def calibrate(self):
         self.nose_baseline = None
         self.face_frames = 0
+        self.pose_baseline = None
+        self.pose_frames = 0
+        self.ear_ref = None
+        self.tilt_seen = self.tilt_raw_at = -1e9
 
     # ---- face -------------------------------------------------------------------------
 
@@ -134,21 +150,64 @@ class Detectors:
         top, nose, chin = face.pts[10, 1], face.pts[1, 1], face.pts[152, 1]
         return float((nose - top) / (chin - top + 1e-6))
 
-    def head_tilt(self, face: Face) -> float:
-        r = self.nose_ratio(face)
-        self.face_frames += 1
-        if self.nose_baseline is None:
-            self.nose_baseline = r
-        delta = self.nose_baseline - r
-        if self.face_frames <= 15:          # warm-up: settle on the neutral pose, no triggers yet
-            self.nose_baseline += 0.25 * (r - self.nose_baseline)
+    @staticmethod
+    def eye_ratio(pose: np.ndarray) -> tuple[float, float] | None:
+        """Eye height relative to the ears, in ear-distances, from the body pose. The pose model keeps
+        tracking a head tipped back so far that the face mesh gives up; tipping back lifts the eyes
+        above the ears, so this ratio drops (like nose_ratio). Returns (ratio, ear distance in pixels)."""
+        pts = pose[[2, 5, *P_EARS]]
+        if pts[:, 3].min() <= VIS:
+            return None
+        ear_d = float(np.linalg.norm(pose[P_EARS[0], :2] - pose[P_EARS[1], :2]))
+        if ear_d < 1e-6:
+            return None
+        return float((pose[[2, 5], 1].mean() - pose[list(P_EARS), 1].mean()) / ear_d), ear_d
+
+    def _tilt_delta(self, r: float, thr: float, baseline: str, frames: str) -> float:
+        """Drop of `r` below its calibrated neutral value (state kept in the `baseline`/`frames` attributes)."""
+        setattr(self, frames, getattr(self, frames) + 1)
+        base = getattr(self, baseline)
+        if base is None:
+            base = r
+        delta = base - r
+        if getattr(self, frames) <= 15:     # warm-up: settle on the neutral pose, no triggers yet
+            setattr(self, baseline, base + 0.25 * (r - base))
             return 0.0
         # Track the neutral pose quickly; anything clearly off-neutral (a tilt up, or looking down
         # at the keyboard) only nudges the baseline, so poses don't become the new neutral, but a
         # bad baseline still recovers within a few seconds instead of leaving dafoe stuck on.
-        rate = 0.02 if abs(delta) < self.cfg["head_tilt_up"] * 0.5 else 0.004 if delta > 0 else 0.001
-        self.nose_baseline += rate * (r - self.nose_baseline)
+        rate = 0.02 if abs(delta) < thr * 0.5 else 0.004 if delta > 0 else 0.001
+        setattr(self, baseline, base + rate * (r - base))
         return delta
+
+    def head_tilt(self, face: Face) -> float:
+        return self._tilt_delta(self.nose_ratio(face), self.cfg["head_tilt_up"], "nose_baseline", "face_frames")
+
+    def dafoe(self, face: Face | None, pose: np.ndarray | None, now: float) -> bool:
+        """Head tipped back. The face mesh is the main signal; the body pose backs it up when the mesh
+        drops out (a head tipped far back) or disagrees for a frame."""
+        c = self.cfg
+        raw = False
+        if face is not None:
+            tilt = self.head_tilt(face)
+            if tilt > c["head_tilt_up"] * TILT_SEEN_FRAC:
+                self.tilt_seen = now
+            raw = tilt > c["head_tilt_up"]
+        eyes = self.eye_ratio(pose) if pose is not None else None
+        if eyes is not None:
+            r, ear_d = eyes
+            pd = self._tilt_delta(r, c["pose_tilt_up"], "pose_baseline", "pose_frames")
+            if pd < c["pose_tilt_up"] * 0.5:
+                self.ear_ref = ear_d if self.ear_ref is None else self.ear_ref + 0.05 * (ear_d - self.ear_ref)
+            latched = now - self.tilt_seen < TILT_LATCH
+            # The pose backs the face mesh up only when the mesh is gone (a face that is there decides alone,
+            # so a quick lean back is still not a look up), and a head turned away (ears drawing together)
+            # moves the eyes relative to the ears without tipping back.
+            if face is None and ear_d >= TILT_EAR_MIN * (self.ear_ref or ear_d):
+                raw = raw or pd > c["pose_tilt_up"] * (TILT_LATCH_FRAC if latched else 1.0)
+        if raw:
+            self.tilt_raw_at = now
+        return raw or (face is None and now - self.tilt_raw_at < TILT_BRIDGE)
 
     # ---- hands over the face ----------------------------------------------------------
 
@@ -507,9 +566,9 @@ class Detectors:
         d["scuba_cat"] = Detection(scuba, covering / 2, fbox)
 
         # ---- dafoe: head tilted back ----
-        if face is not None:
-            tilt = self.head_tilt(face) if covering == 0 else 0.0
-            d["dafoe"] = Detection(tilt > c["head_tilt_up"], tilt / c["head_tilt_up"] * 0.5, fbox)
+        if face is not None or fr.pose is not None:
+            on = covering == 0 and self.dafoe(face, fr.pose, now)
+            d["dafoe"] = Detection(on, 1.0 if on else 0.0, fbox)
 
         # ---- two-arm poses ----
         p = fr.pose

@@ -102,11 +102,11 @@ def make_face(nose_ratio=0.6, blend=None, center=FACE_C, w=FACE_W, h=FACE_H, mou
     return Face(pts, dict(blend or {}))
 
 
-def run(det, hands=(), face=None, now=0.0, motion=0.0):
+def run(det, hands=(), face=None, now=0.0, motion=0.0, pose=None):
     """`motion` = fraction of the frame changed since the previous frame (frame differencing)."""
     m = np.zeros((MOTION_H, MOTION_W), bool)
     m.flat[:int(motion * m.size)] = True
-    return det.run(Frame(hands=list(hands), face=face, motion=m, width=1280, height=720), now)
+    return det.run(Frame(hands=list(hands), face=face, pose=pose, motion=m, width=1280, height=720), now)
 
 
 def raws(d):
@@ -364,6 +364,73 @@ def test_scuba_never_switches_to_higuruma():
     res += [run(det, [covering_hand()], make_face(), now=(10 + i) / 30) for i in range(80)]
     assert res[9]["scuba_cat"].raw
     assert not any(r["higuruma"].raw for r in res)
+
+
+def head_pose(eyes_above_ears=-0.1, vis=0.95) -> np.ndarray:
+    """Body pose with eyes: `eyes_above_ears` is the eye height relative to the ears in ear-distances
+    (negative = eyes above the ears, which is what tipping the head back does more of)."""
+    p = make_pose((480, 560), (800, 560), vis)
+    ear_d = float(np.linalg.norm(p[7, :2] - p[8, :2]))
+    p[2] = (FACE_C[0] - 20, FACE_C[1] + eyes_above_ears * ear_d, 0, vis)
+    p[5] = (FACE_C[0] + 20, FACE_C[1] + eyes_above_ears * ear_d, 0, vis)
+    return p
+
+
+def test_dafoe_from_pose_alone_when_the_face_mesh_drops_out():
+    det = Detectors({})
+    for i in range(30):
+        d = run(det, pose=head_pose(-0.1), now=i / 30)
+    assert not d["dafoe"].raw
+    assert run(det, pose=head_pose(-0.25), now=1.1)["dafoe"].raw
+
+
+def test_dafoe_pose_jitter_does_not_fire():
+    det = Detectors({})
+    for i in range(30):
+        run(det, pose=head_pose(-0.1), now=i / 30)
+    for i, r in enumerate([-0.08, -0.13, -0.11, -0.15, -0.09]):
+        assert not run(det, pose=head_pose(r), now=1 + i / 30)["dafoe"].raw
+
+
+def test_dafoe_stays_on_when_the_face_mesh_is_lost_mid_tilt():
+    """Tipping the head back far enough makes the face mesh vanish; a mild pose tilt keeps it going."""
+    det = Detectors({})
+    for i in range(30):
+        run(det, face=make_face(0.6), pose=head_pose(-0.1), now=i / 30)
+    assert run(det, face=make_face(0.45), pose=head_pose(-0.2), now=1.1)["dafoe"].raw
+    for i in range(30):    # face gone, the pose only shows a 0.05 tilt (below its normal threshold)
+        assert run(det, pose=head_pose(-0.15), now=1.2 + i / 30)["dafoe"].raw
+    # a tilt that was never seen on the face does not latch
+    det = Detectors({})
+    for i in range(30):
+        run(det, pose=head_pose(-0.1), now=i / 30)
+    assert not run(det, pose=head_pose(-0.15), now=1.1)["dafoe"].raw
+
+
+def test_dafoe_pose_alone_is_ignored_while_the_face_mesh_says_neutral():
+    det = Detectors({})
+    for i in range(30):
+        run(det, face=make_face(0.6), pose=head_pose(-0.1), now=i / 30)
+    assert not run(det, face=make_face(0.6), pose=head_pose(-0.3), now=1.1)["dafoe"].raw
+
+
+def test_dafoe_ignores_a_head_turned_away():
+    """Ears drawing together (head turned sideways) shift the eyes against the ears without tipping back."""
+    det = Detectors({})
+    for i in range(30):
+        run(det, pose=head_pose(-0.1), now=i / 30)
+    turned = head_pose(-0.3)
+    cx = FACE_C[0]
+    turned[7, 0], turned[8, 0] = cx - 20, cx + 20
+    assert not run(det, pose=turned, now=1.1)["dafoe"].raw
+
+
+def test_dafoe_pose_tilt_ends_when_the_head_comes_back():
+    det = Detectors({})
+    for i in range(30):
+        run(det, pose=head_pose(-0.1), now=i / 30)
+    run(det, pose=head_pose(-0.25), now=1.0)
+    assert not run(det, pose=head_pose(-0.1), now=2.0)["dafoe"].raw
 
 
 # ---------------------------------------------------------------------------------------

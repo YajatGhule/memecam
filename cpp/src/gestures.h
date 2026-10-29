@@ -32,7 +32,7 @@ public:
     Detectors& operator=(Detectors&&) noexcept;
 
     void calibrate();
-    // Detections by meme name ("dafoe" only when a face is present, like Python).
+    // Detections by meme name ("dafoe" only when a face or a body pose is present, like Python).
     std::map<std::string, Detection> run(const Frame& fr, double now);
     double cfg(const std::string& key, double def = 0.0) const;
     double motion_level(const Frame& fr) const;   // fraction of changed pixels around this person
