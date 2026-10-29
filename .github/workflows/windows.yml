@@ -109,11 +109,27 @@ jobs:
           for u in urls: unpack(urllib.request.urlopen(u).read())
           print(sorted(p.name for p in out.iterdir()))
           EOF
+      - name: Eigen (GitHub mirror)
+        # LiteRT's CMake clones Eigen from gitlab.com, which regularly refuses CI machines under load
+        # ("GitLab is currently unable to handle this request"). Fetch the same pinned commit from the
+        # GitHub mirror (with retries) and hand it to FetchContent instead.
+        shell: bash
+        run: |
+          sha=$(grep -oE 'GIT_TAG +[0-9a-f]{40}' cpp/third_party/tensorflow/tensorflow/lite/tools/cmake/modules/eigen.cmake | awk '{print $2}')
+          echo "eigen $sha"
+          mkdir -p "$RUNNER_TEMP/eigen" && cd "$RUNNER_TEMP/eigen" && git init -q
+          for i in 1 2 3 4 5; do
+            git fetch -q --depth 1 https://github.com/eigen-mirror/eigen.git "$sha" && break
+            echo "fetch $i failed, retrying"; sleep $((i * 15))
+          done
+          git checkout -q FETCH_HEAD
+          git log -1 --format=%H
       - name: Build
         shell: bash
         run: |
           # Newest Visual Studio on the runner; OpenCV's prebuilt vc16 libs work with any newer MSVC.
-          cmake -S cpp -B build -A x64 -DOpenCV_DIR="C:/opencv/opencv/build/x64/vc16/lib"
+          cmake -S cpp -B build -A x64 -DOpenCV_DIR="C:/opencv/opencv/build/x64/vc16/lib" \
+            -DFETCHCONTENT_SOURCE_DIR_EIGEN="$(cygpath -m "$RUNNER_TEMP")/eigen"
           cmake --build build --config Release --target memecam memecamv2 --parallel
       - name: Package
         shell: bash
